@@ -2037,7 +2037,6 @@ dumpMsgs.put(dj);
             String mp3Path = pluginPath + "/config/tts_" + tsNow + ".mp3";
             String pcmPath = pluginPath + "/config/tts_" + tsNow + ".pcm";
             String silkPath = pluginPath + "/config/tts_" + tsNow + ".silk";
-            String amrPath = pluginPath + "/config/tts_" + tsNow + ".amr";
             try {
                 String err = edgeTTS(ttsText, getTtsVoice(), mp3Path);
                 if (err != null) {
@@ -2052,33 +2051,21 @@ dumpMsgs.put(dj);
                         String convErr = convertPcmToSilk(pcmPath, silkPath, 24000);
                         if (convErr != null) {
                             log("error.txt", "TTS silk: " + convErr);
-                            if (debug) sendDebug(peerUin, chatType, "TTS SILK失败: " + convErr);
+                            if (debug) sendDebug(peerUin, chatType, "TTS SILK失败, 用MP3: " + convErr);
                         }
-                        // Also try AMR encoding (pure Java, no root needed)
-                        StringBuilder amrDiag = new StringBuilder();
-                        String amrErr = tryAmrEncode(pcmPath, amrPath, 24000, amrDiag);
-                        if (amrErr != null && debug) {
-                            sendDebug(peerUin, chatType, "TTS AMR: " + amrDiag.toString());
-                        }
-                        // Try sending: prefer .silk, fallback to .amr, last .mp3
-                        File sf = new File(silkPath);
-                        File af = new File(amrPath);
-                        boolean sent = false;
-                        if (sf.exists() && sf.length() > 100) {
-                            if (debug) sendDebug(peerUin, chatType, "TTS send silk: " + sf.length() + " bytes");
-                            try { sendPtt(peerUin, silkPath, chatType); sent = true; }
-                            catch (Exception se) { log("error.txt", "TTS send silk: " + se.getMessage()); }
-                        }
-                        if (!sent && af.exists() && af.length() > 100) {
-                            if (debug) sendDebug(peerUin, chatType, "TTS send amr: " + af.length() + " bytes");
-                            try { sendPtt(peerUin, amrPath, chatType); sent = true; }
-                            catch (Exception ae) { log("error.txt", "TTS send amr: " + ae.getMessage()); }
-                        }
-                        if (!sent) {
-                            log("error.txt", "TTS: all encode failed, trying mp3 raw");
-                            if (debug) sendDebug(peerUin, chatType, "TTS: trying mp3 fallback...");
+                    }
+                    // Send: prefer .silk, fallback .mp3
+                    File sf = new File(silkPath);
+                    if (sf.exists() && sf.length() > 100) {
+                        if (debug) sendDebug(peerUin, chatType, "TTS silk: " + sf.length() + " bytes");
+                        try { sendPtt(peerUin, silkPath, chatType); }
+                        catch (Exception se) { log("error.txt", "TTS send silk: " + se.getMessage()); }
+                    } else {
+                        File mf = new File(mp3Path);
+                        if (mf.exists() && mf.length() > 100) {
+                            if (debug) sendDebug(peerUin, chatType, "TTS mp3: " + mf.length() + " bytes");
                             try { sendPtt(peerUin, mp3Path, chatType); }
-                            catch (Exception mp3e) { log("error.txt", "TTS all formats failed"); }
+                            catch (Exception me) { log("error.txt", "TTS send mp3: " + me.getMessage()); }
                         }
                     }
                 }
@@ -2088,7 +2075,6 @@ dumpMsgs.put(dj);
                 try { new File(mp3Path).delete(); } catch (Exception ignored) { }
                 try { new File(pcmPath).delete(); } catch (Exception ignored) { }
                 try { new File(silkPath).delete(); } catch (Exception ignored) { }
-                try { new File(amrPath).delete(); } catch (Exception ignored) { }
             }
         }
     }
@@ -3102,16 +3088,9 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     return diag.toString();
 }
 
-// Try AMR encoding separately, outputs to amrPath
-String tryAmrEncode(String pcmPath, String amrPath, int sampleRate, StringBuilder diag) {
-    try {
-        if (tryAmrMediaCodec(pcmPath, amrPath, sampleRate, diag)) return null;
-    } catch (Exception e) { diag.append("AMR:").append(e.getMessage()).append("\n"); }
-    return diag.toString();
-}
-
 boolean trySilkQQ(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
     String[] names = {
+        // Old QQ paths
         "com.tencent.mobileqq.ptt.SilkEncDec",
         "com.tencent.mobileqq.transfile.SilkEncDec",
         "com.tencent.mobileqq.utils.SilkEncDec",
@@ -3119,11 +3098,52 @@ boolean trySilkQQ(String pcmPath, String silkPath, int sampleRate, StringBuilder
         "com.tencent.mobileqq.silk.SilkEncDec",
         "com.tencent.av.codec.silk.SilkEncoder",
         "com.tencent.silk.SilkCodec",
-        "com.tencent.qqnt.aio.adapter.ptt.PttHelper"
+        "com.tencent.qqnt.aio.adapter.ptt.PttHelper",
+        // QQ NT paths
+        "com.tencent.qqnt.ptt.PttEncodeHelper",
+        "com.tencent.qqnt.ptt.SilkEncoder",
+        "com.tencent.qqnt.audio.SilkUtil",
+        "com.tencent.qqnt.kernel.ptt.PttService",
+        "com.tencent.qqnt.ptt.PttManager",
+        "com.tencent.qqnt.freesia.WrapperPttService",
+        // Generic/fallback
+        "com.tencent.av.VoiceCodec",
+        "com.tencent.av.codec.CodecBase",
+        "com.tencent.qqnt.audio.AudioEncode",
+        "com.tencent.qqnt.kernel.nativeinterface.IKernelPttService",
     };
-    for (String cn : names) {
+    // Also try to find any class with "Silk" or "silk" in name via brute force
+    java.util.List extraNames = new java.util.ArrayList();
+    try {
+        // Try to enumerate classes from QQ's classloader
+        java.lang.reflect.Field f = ClassLoader.class.getDeclaredField("classes");
+        f.setAccessible(true);
+        java.util.Vector vec = (java.util.Vector) f.get(classLoader);
+        if (vec != null) {
+            for (int vi = 0; vi < vec.size(); vi++) {
+                Object cobj = vec.get(vi);
+                if (cobj instanceof Class) {
+                    String cname = ((Class)cobj).getName();
+                    String lc = cname.toLowerCase();
+                    if ((lc.contains("silk") || lc.contains("ptt")) && lc.contains("encod")) {
+                        extraNames.add(cname);
+                    }
+                }
+            }
+        }
+    } catch (Exception e) { }
+    // Combine and deduplicate
+    java.util.Set allNames = new java.util.LinkedHashSet();
+    for (int i = 0; i < names.length; i++) allNames.add(names[i]);
+    for (int i = 0; i < extraNames.size(); i++) allNames.add(extraNames.get(i));
+    diag.append("[QQ]scan ").append(allNames.size()).append(" classes ");
+    for (Object cnObj : allNames) {
+        String cn = (String) cnObj;
         try {
-            Class c = classLoader.loadClass(cn);
+            Class c = null;
+            try { c = Class.forName(cn); } catch (Exception e) { }
+            if (c == null) try { c = classLoader.loadClass(cn); } catch (Exception e) { }
+            if (c == null) continue;
             String sn = cn.substring(cn.lastIndexOf('.') + 1);
             diag.append("[QQ]").append(sn).append(": ");
             java.lang.reflect.Method[] ms = c.getDeclaredMethods();
