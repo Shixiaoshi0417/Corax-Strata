@@ -8,6 +8,7 @@ import java.util.Date;
 import android.os.Handler;
 import android.os.Looper;
 import java.net.*;
+import javax.net.ssl.*;
 import org.json.*;
 
 // ==================== 全局变量 ====================
@@ -33,6 +34,7 @@ static String cachedSkills = null;
 static boolean aiProcessing = false;
 static Handler reminderHandler = null;
 static Set listenSessions = null;
+static Set ttsSessions = null;
 static boolean aiReady = false;
 static String lastAssistantMsg = null;
 static String quotedUin = "";
@@ -1457,8 +1459,24 @@ void handleAi(Object msg, String prompt) {
             sendStyledHeader(msg, "INFO", "监听: " + (ls.contains(key) ? "已开启" : "已关闭")); return;
         }
     }
-    
-    
+
+    if (trimmed.equals("tts") || trimmed.equals("tts on") || trimmed.equals("tts off") || trimmed.equals("tts status")) {
+        if (!userRole.equals("ADMIN") && !userRole.equals("OWNER")) { sendPermissionDenied(msg); return; }
+        String key = peerUin + "_" + chatType;
+        if (trimmed.equals("tts") || trimmed.equals("tts on")) {
+            addToList(pluginPath + "/config/tts_sessions.txt", key);
+            if (ttsSessions != null) ttsSessions.add(key);
+            sendStyledHeader(msg, "INFO", "TTS 已开启 (voice: " + getTtsVoice() + ")"); return;
+        } else if (trimmed.equals("tts off")) {
+            removeFromList(pluginPath + "/config/tts_sessions.txt", key);
+            if (ttsSessions != null) ttsSessions.remove(key);
+            sendStyledHeader(msg, "INFO", "TTS 已关闭"); return;
+        } else {
+            Set ts = readStringSet(pluginPath + "/config/tts_sessions.txt");
+            sendStyledHeader(msg, "INFO", "TTS: " + (ts.contains(key) ? "已开启" : "已关闭") + " (voice: " + getTtsVoice() + ")"); return;
+        }
+    }
+
     if (trimmed.equals("reboot") || trimmed.startsWith("reboot ")) { handleReboot(msg, trimmed); return; }
     if (trimmed.equals("debug") || trimmed.startsWith("debug ")) { handleDebug(msg, trimmed); return; }
     Map cfg = loadAiConfig();
@@ -1466,6 +1484,9 @@ void handleAi(Object msg, String prompt) {
         sendStyledHeader(msg, "ERROR", "AI 未启用"); aiProcessing = false; return;
     }
     getDb(); List ctx = getAiContext(peerUin, chatType);
+    if (ttsSessions == null) ttsSessions = readStringSet(pluginPath + "/config/tts_sessions.txt");
+    boolean ttsOn = ttsSessions.contains(peerUin + "_" + chatType);
+    StringBuilder ttsReply = new StringBuilder();
 
     if (trimmed.equals("dumpctx")) {
         if (!userRole.equals("OWNER") && !userRole.equals("ADMIN")) { sendPermissionDenied(msg); return; }
@@ -1648,6 +1669,7 @@ dumpMsgs.put(dj);
         senderUin);
     if (!ai2Content.isEmpty()) {
         addToContext(ctx, "assistant", ai2Content, null);
+        if (ttsOn) ttsReply.append(ai2Content.replace("[SPLIT]", " ")).append(" ");
     }
 
     if (debug) {
@@ -1838,6 +1860,7 @@ dumpMsgs.put(dj);
                         }
                     }
                     addToContext(ctx, "assistant", r2c, null);
+                    if (ttsOn) ttsReply.append(r2c.replace("[SPLIT]", " ")).append(" ");
                 }
             }
         }
@@ -1919,7 +1942,8 @@ dumpMsgs.put(dj);
                                 try { Thread.sleep(150); } catch (Exception ignored) { }
                             }
                         }
-                        addToContext(ctx, "assistant", r2c, null); 
+                        addToContext(ctx, "assistant", r2c, null);
+                        if (ttsOn) ttsReply.append(r2c.replace("[SPLIT]", " ")).append(" ");
                     } else if (!hasSentReply) {
                         sendMsg(peerUin, "[AI] 没找到相关内容，换个说法试试", chatType);
                         hasSentReply = true;
@@ -1968,7 +1992,8 @@ dumpMsgs.put(dj);
                             try { Thread.sleep(150); } catch (Exception ignored) { }
                         }
                     }
-                addToContext(ctx, "assistant", r2c, null); 
+                addToContext(ctx, "assistant", r2c, null);
+                if (ttsOn) ttsReply.append(r2c.replace("[SPLIT]", " ")).append(" ");
                 } else if (!hasSentReply) {
                     sendMsg(peerUin, "[AI] 没找到相关内容，换个说法试试", chatType);
                     hasSentReply = true;
@@ -2004,6 +2029,26 @@ dumpMsgs.put(dj);
         finalMsg.append("\nThinkTime:").append(elapsed).append("s\nAIcalls:").append(totalCalls);
     }
     if (finalMsg.length() > 0) sendMsg(peerUin, finalMsg.toString(), chatType);
+
+    if (ttsOn && ttsReply.length() > 0) {
+        String ttsText = ttsReply.toString().trim();
+        if (!ttsText.isEmpty()) {
+            String audioPath = pluginPath + "/config/tts_" + System.currentTimeMillis() + ".mp3";
+            try {
+                String err = edgeTTS(ttsText, getTtsVoice(), audioPath);
+                if (err == null) {
+                    sendPtt(peerUin, audioPath, chatType);
+                } else {
+                    log("error.txt", "TTS: " + err);
+                    if (debug) sendDebug(peerUin, chatType, "TTS 失败: " + err);
+                }
+            } catch (Exception e) {
+                log("error.txt", "TTS exception: " + e.getMessage());
+            } finally {
+                try { new File(audioPath).delete(); } catch (Exception ignored) { }
+            }
+        }
+    }
 
     // v3.0: 精简 ctx 存储（带注解格式）
     String sceneTag = chatType == 2 ? "[群:" + peerUin + "]" : "[私聊]";
@@ -2907,7 +2952,7 @@ void handleAiSet(Object msg, String args) {
         return; 
     }
     String key = parts[0].trim(); String value = parts[1].trim();
-    String[] vk = { "api_key","model","ai_url","context_ttl","max_turns","search_provider","search_api_key","show_stats","debug","ai_prefix","search_rounds","temperature","pat_wake","sewarden" };
+    String[] vk = { "api_key","model","ai_url","context_ttl","max_turns","search_provider","search_api_key","show_stats","debug","ai_prefix","search_rounds","temperature","pat_wake","sewarden","tts_voice" };
     boolean valid = false; for (int i = 0; i < vk.length; i++) if (vk[i].equals(key)) { valid = true; break; }
     if (!valid) { sendStyledHeader(msg, "ERROR", "无效: " + key); return; }
     if (key.equals("context_ttl") || key.equals("max_turns") || key.equals("show_stats") || key.equals("debug") || key.equals("pat_wake")) { try { Integer.parseInt(value); } catch (Exception e) { sendStyledHeader(msg, "ERROR", "必须是整数"); return; } }
@@ -2920,7 +2965,7 @@ void handleAiConfig(Object msg) {
     if (!requireAdminOrOwner(msg)) return;
     Map cfg = loadAiConfig();
     StringBuilder sb = new StringBuilder("[AI 配置]\n");
-    String[] keys = { "model","api_key","ai_url","context_ttl","max_turns","search_provider","search_api_key","search_rounds","show_stats","debug","ai_prefix","temperature","pat_wake","sewarden" };
+    String[] keys = { "model","api_key","ai_url","context_ttl","max_turns","search_provider","search_api_key","search_rounds","show_stats","debug","ai_prefix","temperature","pat_wake","sewarden","tts_voice" };
     for (int i = 0; i < keys.length; i++) { String k = keys[i]; String v = (String) cfg.get(k); if (v == null) v = ""; if (k.contains("api_key") && v.length() >= 8) v = maskApiKey(v); sb.append(k).append(" = ").append(v).append("\n"); }
     sb.append("default_account = ").append(getDefaultAccount()).append("\n");
     String persona = loadPersona(); sb.append("人设 = ").append(getActivePersona()).append(persona.isEmpty() ? " (未)" : " (" + persona.length() + "字符)").append("\n");
@@ -2934,6 +2979,132 @@ void handleAiForget(Object msg, String keyword) {
     if (keyword == null || keyword.trim().isEmpty()) { sendStyledHeader(msg, "ERROR", "用法: /ai forget <关键词>"); return; }
     int d = deleteMemoriesByKeyword(senderUin, keyword.trim());
     sendStyledHeader(msg, "INFO", d > 0 ? "已删除 " + d + " 条" : "没有匹配的记忆");
+}
+
+// ==================== Edge TTS ====================
+String getTtsVoice() {
+    String v = getAiConfig("tts_voice");
+    return (v == null || v.isEmpty()) ? "zh-CN-XiaoxiaoNeural" : v;
+}
+
+String edgeTTS(String text, String voice, String outputPath) {
+    if (text == null || text.trim().isEmpty()) return "empty text";
+    text = text.trim();
+    if (text.length() > 3000) text = text.substring(0, 3000);
+    SSLSocket sock = null;
+    FileOutputStream fos = null;
+    try {
+        SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        sock = (SSLSocket) sf.createSocket("speech.platform.bing.com", 443);
+        sock.setSoTimeout(30000);
+        OutputStream out = sock.getOutputStream();
+        InputStream in = sock.getInputStream();
+
+        byte[] keyBytes = new byte[16];
+        new Random().nextBytes(keyBytes);
+        String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
+        String connId = UUID.randomUUID().toString().replace("-", "");
+
+        StringBuilder req = new StringBuilder();
+        req.append("GET /consumer/speech/synthesize/restream/v1/hubs/SpeechHub?Retry-After=200&X-ConnectionId=");
+        req.append(connId).append(" HTTP/1.1\r\n");
+        req.append("Host: speech.platform.bing.com\r\n");
+        req.append("Upgrade: websocket\r\nConnection: Upgrade\r\n");
+        req.append("Sec-WebSocket-Key: ").append(wsKey).append("\r\n");
+        req.append("Sec-WebSocket-Version: 13\r\n");
+        req.append("Origin: chrome-extension://jdiccldimpdaibmpdmdber\r\n\r\n");
+        out.write(req.toString().getBytes("UTF-8"));
+        out.flush();
+
+        StringBuilder httpResp = new StringBuilder();
+        int st = 0;
+        while (true) {
+            int b = in.read();
+            if (b == -1) return "handshake: connection closed";
+            httpResp.append((char) b);
+            if (st == 0 && b == '\r') st = 1;
+            else if (st == 1 && b == '\n') st = 2;
+            else if (st == 2 && b == '\r') st = 3;
+            else if (st == 3 && b == '\n') break;
+            else if (b == '\r') st = 1;
+            else st = 0;
+        }
+        if (!httpResp.toString().contains("101")) return "handshake: " + httpResp.toString().split("\r\n")[0];
+
+        String reqId = UUID.randomUUID().toString().replace("-", "");
+        String config = "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
+            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}";
+        wsSendText(out, config);
+
+        String escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+        String ssml = "X-RequestId:" + reqId + "\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n"
+            + "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>"
+            + "<voice name='" + voice + "'>"
+            + "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>" + escaped + "</prosody>"
+            + "</voice></speak>";
+        wsSendText(out, ssml);
+
+        fos = new FileOutputStream(outputPath);
+        boolean audioReceived = false;
+        while (true) {
+            int b0 = in.read(); if (b0 == -1) break;
+            int b1 = in.read(); if (b1 == -1) break;
+            int opcode = b0 & 0x0F;
+            boolean masked = (b1 & 0x80) != 0;
+            long plen = b1 & 0x7F;
+            if (plen == 126) {
+                int h = in.read(); int l = in.read();
+                plen = ((h & 0xFF) << 8) | (l & 0xFF);
+            } else if (plen == 127) {
+                plen = 0;
+                for (int i = 0; i < 8; i++) plen = (plen << 8) | (in.read() & 0xFF);
+            }
+            byte[] maskKey = null;
+            if (masked) { maskKey = new byte[4]; for (int i = 0; i < 4; i++) maskKey[i] = (byte) in.read(); }
+            byte[] payload = new byte[(int) plen];
+            int rd = 0;
+            while (rd < plen) { int r = in.read(payload, rd, (int)(plen - rd)); if (r == -1) break; rd += r; }
+            if (masked) for (int i = 0; i < payload.length; i++) payload[i] ^= maskKey[i % 4];
+
+            if (opcode == 1) {
+                String txt = new String(payload, "UTF-8");
+                if (txt.contains("Path:turn.end")) break;
+            } else if (opcode == 2) {
+                if (payload.length > 2) {
+                    int hdrLen = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
+                    int audioStart = 2 + hdrLen;
+                    if (audioStart < payload.length) {
+                        fos.write(payload, audioStart, payload.length - audioStart);
+                        audioReceived = true;
+                    }
+                }
+            } else if (opcode == 8) { break; }
+        }
+        fos.flush(); fos.close(); fos = null;
+        if (!audioReceived) { new File(outputPath).delete(); return "no audio data received"; }
+        return null;
+    } catch (Exception e) {
+        return e.getClass().getSimpleName() + ": " + e.getMessage();
+    } finally {
+        if (fos != null) try { fos.close(); } catch (Exception ignored) { }
+        if (sock != null) try { sock.close(); } catch (Exception ignored) { }
+    }
+}
+
+void wsSendText(OutputStream out, String text) throws Exception {
+    byte[] payload = text.getBytes("UTF-8");
+    int len = payload.length;
+    ByteArrayOutputStream frame = new ByteArrayOutputStream();
+    frame.write(0x81);
+    if (len < 126) { frame.write(0x80 | len); }
+    else if (len < 65536) { frame.write(0x80 | 126); frame.write((len >> 8) & 0xFF); frame.write(len & 0xFF); }
+    else { frame.write(0x80 | 127); for (int i = 7; i >= 0; i--) frame.write((int)((len >> (8 * i)) & 0xFF)); }
+    byte[] mask = new byte[4];
+    new Random().nextBytes(mask);
+    frame.write(mask, 0, 4);
+    for (int i = 0; i < len; i++) frame.write(payload[i] ^ mask[i % 4]);
+    out.write(frame.toByteArray());
+    out.flush();
 }
 
 String maskApiKey(String key) {
@@ -3062,6 +3233,7 @@ public void onMsg(Object msg) {
     
     // v4.0: 监听模式 — 只记录不调用 AI
     if (listenSessions == null) listenSessions = readStringSet(pluginPath + "/config/listen_sessions.txt");
+    if (ttsSessions == null) ttsSessions = readStringSet(pluginPath + "/config/tts_sessions.txt");
     if (!aiProcessing && !trimmed.startsWith("/")
         && listenSessions.contains(peerUin + "_" + chatType)) {
         
@@ -3176,7 +3348,7 @@ if (!trimmed.startsWith("/") || trimmed.length() < 2) return;
         String role = getRole(senderUin);
         StringBuilder h = new StringBuilder();
         h.append("墨鸦 v4.3.2 Strata\n\n/ai <内容>\n/ai memory / debug / reboot / status\n");
-        if (role.equals("ADMIN") || role.equals("OWNER")) h.append("/ai set / config / off / on / clear\n");
+        if (role.equals("ADMIN") || role.equals("OWNER")) h.append("/ai set / config / off / on / clear\n/ai tts on/off/status\n");
         if (role.equals("OWNER")) h.append("/setdefaultaccount\n");
         h.append("\n墨鸦-Strata | 轻量级 Agentic RAG");
         sendStyledHeader(msg, "INFO", h.toString()); return;
