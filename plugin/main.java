@@ -3302,7 +3302,6 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
                 }
             }
             diag.append("]");
-        } catch (Exception e) { }
     }
     
     return false;
