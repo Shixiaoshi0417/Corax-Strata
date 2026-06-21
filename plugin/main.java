@@ -1695,9 +1695,9 @@ dumpMsgs.put(dj);
         sendDebug(peerUin, chatType, dbg);
     }
 
-    boolean hasSentReply = false; boolean isFirstReply = true;
+    boolean hasSentReply = ttsOn; boolean isFirstReply = !ttsOn;
 
-    if (!ai2Content.isEmpty()) {
+    if (!ai2Content.isEmpty() && !ttsOn) {
         String[] segs = ai2Content.split("\\[SPLIT\\]");
         for (int si = 0; si < segs.length; si++) {
             String seg = segs[si].trim();
