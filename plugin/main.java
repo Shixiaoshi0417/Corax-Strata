@@ -3243,10 +3243,10 @@ boolean tryAmrMediaCodec(String pcmPath, String silkPath, int sampleRate, String
         int amrBitRate = 23850; // AMR-WB 23.85 kbps mode 8
 
         android.media.MediaFormat fmt = android.media.MediaFormat.createAudioFormat(
-            "audio/3gpp", amrSampleRate, 1);
+            "audio/amr-wb", amrSampleRate, 1);
         fmt.setInteger("bitrate", amrBitRate);
 
-        encoder = android.media.MediaCodec.createEncoderByType("audio/3gpp");
+        encoder = android.media.MediaCodec.createEncoderByType("audio/amr-wb");
         encoder.configure(fmt, null, null, 1); // CONFIGURE_FLAG_ENCODE = 1
         encoder.start();
 
@@ -3272,7 +3272,7 @@ boolean tryAmrMediaCodec(String pcmPath, String silkPath, int sampleRate, String
                     int read = fis.read(pcmBuf);
                     if (read <= 0) {
                         encoder.queueInputBuffer(inIdx, 0, 0, totalUs,
-                            android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            4); // BUFFER_FLAG_END_OF_STREAM
                         inputDone = true;
                     } else {
                         // Resample from input rate to 16000 if needed
@@ -3291,7 +3291,7 @@ boolean tryAmrMediaCodec(String pcmPath, String silkPath, int sampleRate, String
             }
             int outIdx = encoder.dequeueOutputBuffer(info, 10000);
             if (outIdx >= 0) {
-                if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+                if ((info.flags & 4) != 0) // BUFFER_FLAG_END_OF_STREAM
                     outputDone = true;
                 if (info.size > 0) {
                     java.nio.ByteBuffer outBuf = encoder.getOutputBuffer(outIdx);
@@ -3323,7 +3323,7 @@ boolean tryAmrMediaCodec(String pcmPath, String silkPath, int sampleRate, String
     }
 }
 
-// Simple linear PCM resampling
+// Simple linear PCM resampling (uses int to avoid BeanShell short cast issues)
 byte[] resamplePcm(byte[] input, int inputLen, int srcRate, int dstRate) {
     int srcSamples = inputLen / 2; // 16-bit mono
     int dstSamples = (int)((long)srcSamples * dstRate / srcRate);
@@ -3333,9 +3333,16 @@ byte[] resamplePcm(byte[] input, int inputLen, int srcRate, int dstRate) {
         int idx0 = (int)srcIdx;
         int idx1 = Math.min(idx0 + 1, srcSamples - 1);
         double frac = srcIdx - idx0;
-        short s0 = (short)((input[idx0*2] & 0xFF) | ((input[idx0*2+1] & 0xFF) << 8));
-        short s1 = (short)((input[idx1*2] & 0xFF) | ((input[idx1*2+1] & 0xFF) << 8));
-        short val = (short)(s0 + (s1 - s0) * frac);
+        // Read as unsigned int, convert to signed
+        int s0 = ((input[idx0*2] & 0xFF) | ((input[idx0*2+1] & 0xFF) << 8));
+        if (s0 >= 32768) s0 -= 65536;
+        int s1 = ((input[idx1*2] & 0xFF) | ((input[idx1*2+1] & 0xFF) << 8));
+        if (s1 >= 32768) s1 -= 65536;
+        int val = (int)(s0 + (s1 - s0) * frac);
+        // Clamp to signed 16-bit range
+        if (val > 32767) val = 32767;
+        if (val < -32768) val = -32768;
+        if (val < 0) val += 65536;
         output[i*2] = (byte)(val & 0xFF);
         output[i*2+1] = (byte)((val >> 8) & 0xFF);
     }
