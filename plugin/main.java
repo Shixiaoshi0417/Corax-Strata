@@ -2033,7 +2033,7 @@ dumpMsgs.put(dj);
     if (ttsOn && ttsReply.length() > 0) {
         String ttsText = ttsReply.toString().trim();
         if (!ttsText.isEmpty()) {
-            String audioPath = pluginPath + "/config/tts_" + System.currentTimeMillis() + ".mp3";
+            String audioPath = pluginPath + "/config/tts_" + System.currentTimeMillis() + ".silk";
             try {
                 String err = edgeTTS(ttsText, getTtsVoice(), audioPath);
                 if (err == null) {
@@ -3082,7 +3082,7 @@ String edgeTTS(String text, String voice, String outputPath) {
         String ts = isoFmt.format(new Date());
 
         String config = "X-Timestamp:" + ts + "\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
-            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n";
+            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"raw-24khz-16bit-mono-truesilk\"}}}}\r\n";
         wsSendText(out, config);
 
         String escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
@@ -3094,6 +3094,7 @@ String edgeTTS(String text, String voice, String outputPath) {
         wsSendText(out, ssml);
 
         fos = new FileOutputStream(outputPath);
+        fos.write(new byte[]{0x23, 0x21, 0x53, 0x49, 0x4C, 0x4B, 0x5F, 0x56, 0x33, 0x0A}); // #!SILK_V3\n
         boolean audioReceived = false;
         int totalAudioBytes = 0;
         int frameCount = 0;
