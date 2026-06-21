@@ -3080,13 +3080,9 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     try { if (trySilkQQ(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S1:").append(e.getMessage()).append("\n"); }
 
-    // Strategy 2: JNI .so via DexClassLoader + System.load (dlopen works without root)
+    // Strategy 2: JNI .so via loadJava/loadDex/DexClassLoader + System.load (dlopen works without root)
     try { if (trySilkJNI(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S2:").append(e.getMessage()).append("\n"); }
-
-    // Strategy 3: MediaCodec AMR-WB (pure Java, no root, no native binaries)
-    try { if (tryAmrMediaCodec(pcmPath, silkPath, sampleRate, diag)) return null; }
-    catch (Exception e) { diag.append("S3:").append(e.getMessage()).append("\n"); }
 
     return diag.toString();
 }
@@ -3141,10 +3137,10 @@ boolean trySilkQQ(String pcmPath, String silkPath, int sampleRate, StringBuilder
 boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
     String soSrc = pluginPath + "/bin/libsilkjni.so";
     String dexSrc = pluginPath + "/bin/silkjni.dex";
+    String javaSrc = pluginPath + "/bin/SilkJNI.java";
     if (!new File(soSrc).exists()) { diag.append("[JNI]no .so\n"); return false; }
-    if (!new File(dexSrc).exists()) { diag.append("[JNI]no .dex\n"); return false; }
 
-    // Get internal dir for .so copy
+    // Get internal dir for file copies (writable without root)
     String soDir = null;
     try { soDir = ((File) context.getClass().getMethod("getFilesDir").invoke(context)).getAbsolutePath(); }
     catch (Exception e) {
@@ -3155,6 +3151,7 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
         } catch (Exception e2) { soDir = "/data/data/com.tencent.mobileqq/files"; }
     }
     String soDest = soDir + "/libsilkjni.so";
+    // Copy .so to internal dir
     try {
         File df = new File(soDest);
         if (!df.exists() || df.length() != new File(soSrc).length()) {
@@ -3162,59 +3159,102 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
             byte[] buf = new byte[8192]; int n; while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
             fos.close(); fis.close();
         }
-    } catch (Exception e) { diag.append("[JNI]copy:").append(e.getMessage()).append("\n"); return false; }
+    } catch (Exception e) { diag.append("[JNI]copy-so:").append(e.getMessage()).append("\n"); return false; }
 
-    // Load DEX containing SilkJNI class
-    boolean dexLoaded = false;
-    try {
-        loadDex(dexSrc);
-        dexLoaded = true;
-    } catch (Exception e) { diag.append("[JNI]loadDex:").append(e.getMessage()).append("\n"); }
-
-    // Try to find SilkJNI class
     Class silkClass = null;
-    if (dexLoaded) {
-        try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
-        if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
-        if (silkClass == null) try { silkClass = Thread.currentThread().getContextClassLoader().loadClass("SilkJNI"); } catch (Exception e) { }
-    }
-    if (silkClass == null) {
-        // Fallback: DexClassLoader with system ClassLoader as parent (works without root)
+
+    // === Approach A: loadJava (QFun compiles .java, handles native methods) ===
+    if (new File(javaSrc).exists()) {
         try {
-            ClassLoader sysCl = Class.forName("java.lang.Object").getClassLoader();
-            if (sysCl == null) sysCl = ClassLoader.getSystemClassLoader();
-            dalvik.system.DexClassLoader dcl = new dalvik.system.DexClassLoader(
-                dexSrc, soDir, null, sysCl != null ? sysCl : classLoader);
-            silkClass = dcl.loadClass("SilkJNI");
-            diag.append("[JNI]DexClassLoader ");
+            loadJava(javaSrc);
+            diag.append("[JNI]loadJava ");
+            // After loadJava, try to find the class
+            try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
+            if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
         } catch (Exception e) {
-            diag.append("[JNI]DexCL:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "err").append(" ");
+            diag.append("loadJava err:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "").append(" ");
         }
     }
-    if (silkClass == null) {
-        // Last resort: try PathClassLoader
+
+    // === Approach B: loadDex + import (QFun doc says use import after loadDex) ===
+    if (silkClass == null && new File(dexSrc).exists()) {
         try {
-            dalvik.system.PathClassLoader pcl = new dalvik.system.PathClassLoader(dexSrc, classLoader);
+            loadDex(dexSrc);
+            diag.append("[JNI]loadDex ");
+            // QFun doc says: after loadDex, use import to access classes
+            try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
+            if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
+            if (silkClass == null) {
+                // Try via BeanShell's interpreter namespace
+                try {
+                    Object bshInterp = this.interpreter;
+                    if (bshInterp != null) {
+                        Object bshNameSpace = bshInterp.getClass().getMethod("getNameSpace").invoke(bshInterp);
+                        if (bshNameSpace != null) {
+                            Object bshClass = bshNameSpace.getClass().getMethod("getClass", String.class).invoke(bshNameSpace, "SilkJNI");
+                            if (bshClass != null && bshClass instanceof Class) silkClass = (Class) bshClass;
+                        }
+                    }
+                } catch (Exception e) { }
+            }
+        } catch (Exception e) {
+            diag.append("loadDex err:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "").append(" ");
+        }
+    }
+
+    // === Approach C: DexClassLoader from internal dir (copy dex first) ===
+    if (silkClass == null && new File(dexSrc).exists()) {
+        try {
+            String dexDest = soDir + "/silkjni.dex";
+            File ddf = new File(dexDest);
+            if (!ddf.exists() || ddf.length() != new File(dexSrc).length()) {
+                FileInputStream fis = new FileInputStream(dexSrc); FileOutputStream fos = new FileOutputStream(dexDest);
+                byte[] buf = new byte[8192]; int n; while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
+                fos.close(); fis.close();
+            }
+            // Use DexClassLoader with the right parent chain
+            ClassLoader parentCL = ClassLoader.getSystemClassLoader();
+            if (parentCL == null) parentCL = Class.forName("java.lang.Object").getClassLoader();
+            if (parentCL == null) parentCL = classLoader;
+            dalvik.system.DexClassLoader dcl = new dalvik.system.DexClassLoader(dexDest, soDir, null, parentCL);
+            silkClass = dcl.loadClass("SilkJNI");
+            diag.append("[JNI]DexCL-internal ");
+        } catch (Exception e) {
+            diag.append("DexCL:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "err").append(" ");
+        }
+    }
+
+    // === Approach D: PathClassLoader last resort ===
+    if (silkClass == null && new File(dexSrc).exists()) {
+        try {
+            dalvik.system.PathClassLoader pcl = new dalvik.system.PathClassLoader(dexSrc, ClassLoader.getSystemClassLoader());
             silkClass = pcl.loadClass("SilkJNI");
             diag.append("[JNI]PathCL ");
         } catch (Exception e) { }
     }
+
     if (silkClass == null) {
         diag.append("[JNI]class not found\n");
         return false;
     }
-    diag.append("[JNI]class loaded ");
+    diag.append("class-ok ");
 
-    // Load native library via the class's own loadNative method
+    // Load native library
     try {
         java.lang.reflect.Method loadM = silkClass.getMethod("loadNative", String.class);
         Object loadResult = loadM.invoke(null, soDest);
         if (loadResult != null) { diag.append("load:").append(loadResult).append("\n"); return false; }
     } catch (Exception e) {
-        diag.append("load err:").append(e.getMessage()).append("\n");
-        return false;
+        // Fallback: try System.load directly
+        try {
+            System.load(soDest);
+            diag.append("sysload ");
+        } catch (Exception e2) {
+            diag.append("load-err:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "?").append("\n");
+            return false;
+        }
     }
-    diag.append("so loaded ");
+    diag.append("so-ok ");
 
     // Call encode
     try {
@@ -3227,7 +3267,7 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
         }
         diag.append("ret=").append(retCode).append("\n");
     } catch (Exception e) {
-        diag.append("encode:").append(e.getMessage()).append("\n");
+        diag.append("encode:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(40, e.getMessage().length())) : "?").append("\n");
     }
     return false;
 }
