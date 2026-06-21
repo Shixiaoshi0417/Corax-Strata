@@ -2046,7 +2046,6 @@ dumpMsgs.put(dj);
         if (!ttsText.isEmpty()) {
             long tsNow = System.currentTimeMillis();
             String mp3Path = pluginPath + "/config/tts_" + tsNow + ".mp3";
-            String mp3Path = pluginPath + "/config/tts_" + tsNow + ".mp3";
             try {
                 String err = edgeTTS(ttsText, getTtsVoice(), mp3Path);
                 if (err != null) {
@@ -2062,9 +2061,10 @@ dumpMsgs.put(dj);
                 }
             } catch (Exception e) {
                 log("error.txt", "TTS exception: " + e.getMessage());
-            } finally {
-                try { new File(mp3Path).delete(); } catch (Exception ignored) { }
             }
+            // Delay delete: 5s after sending (QQ needs time to upload)
+            final String mp3ToDelete = mp3Path;
+            new Thread() { public void run() { try { Thread.sleep(5000); } catch (Exception ie) {} try { new File(mp3ToDelete).delete(); } catch (Exception ie2) {} } }.start();
         }
     }
 
