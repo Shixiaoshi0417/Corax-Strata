@@ -3094,53 +3094,53 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
 
 // Try to use QQ's own native SILK library (already loaded in process)
 boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
-    // Found in /proc/self/maps: /libcodecsilk.so is QQ's SILK codec
-    // Look for the Java wrapper class that uses this library
-    String[] wrapperClasses = {
-        "com.tencent.codecsilk.SilkEncoder",
-        "com.tencent.mobileqq.codecsilk.SilkUtil",
-        "com.tencent.qqnt.codecsilk.CodecSilk",
-        "com.tencent.av.codecsilk.SilkWrapper",
-        "com.tencent.silkcodec.SilkCodec",
-        "com.tencent.mobileqq.ptt.codecsilk.SilkHelper",
-        "com.tencent.qqnt.ptt.codec.SilkCodec",
-        "com.tencent.qqnt.kernel.codecsilk.SilkEncoder",
-    };
+    // Try System.loadLibrary first
+    try { System.loadLibrary("codecsilk"); diag.append("lib-ok "); } catch (Throwable t) { }
     
-    // Also brute-force search all loaded classes for "codecsilk"
-    java.util.Set silkClassNames = new java.util.LinkedHashSet();
-    for (int i = 0; i < wrapperClasses.length; i++) silkClassNames.add(wrapperClasses[i]);
+    // Also brute-force: scan ALL ClassLoaders for silk classes AND keep Class instances
+    java.util.Map silkClassMap = new java.util.LinkedHashMap();
+    ClassLoader[] cls = new ClassLoader[] {
+        classLoader,
+        Thread.currentThread().getContextClassLoader(),
+        ClassLoader.getSystemClassLoader(),
+    };
     try {
-        java.lang.reflect.Field f = ClassLoader.class.getDeclaredField("classes");
-        f.setAccessible(true);
-        java.util.Vector vec = (java.util.Vector) f.get(classLoader);
-        if (vec != null) {
-            for (int vi = 0; vi < vec.size(); vi++) {
-                Object cobj = vec.get(vi);
-                if (cobj instanceof Class) {
-                    String cname = ((Class)cobj).getName().toLowerCase();
-                    if (cname.contains("codecsilk") || cname.contains("silkcodec") || cname.contains("silk_codec")) {
-                        silkClassNames.add(((Class)cobj).getName());
+        ClassLoader ctxCl = context.getClass().getClassLoader();
+        cls = new ClassLoader[] { ctxCl, classLoader,
+            Thread.currentThread().getContextClassLoader(), ClassLoader.getSystemClassLoader() };
+    }
+    catch (Exception e) { }
+    
+    for (int cli = 0; cli < cls.length; cli++) {
+        ClassLoader cl = cls[cli];
+        if (cl == null) continue;
+        try {
+            java.lang.reflect.Field f = ClassLoader.class.getDeclaredField("classes");
+            f.setAccessible(true);
+            java.util.Vector vec = (java.util.Vector) f.get(cl);
+            if (vec != null) {
+                for (int vi = 0; vi < vec.size(); vi++) {
+                    Object cobj = vec.get(vi);
+                    if (cobj instanceof Class) {
+                        String cname = ((Class)cobj).getName();
+                        String lc = cname.toLowerCase();
+                        if (lc.contains("silk")) {
+                            silkClassMap.put(cname, (Class)cobj);
+                        }
                     }
                 }
             }
-        }
-    } catch (Exception e) { }
+        } catch (Exception e) { }
+    }
     
-    diag.append("[NAT]try ").append(silkClassNames.size()).append(" wrappers ");
+    diag.append("[NAT]").append(silkClassMap.size()).append(" silk classes ");
     
-    // First try to ensure the native library is loaded
-    try { System.loadLibrary("codecsilk"); diag.append("lib-ok "); } catch (Throwable t) { }
-    
-    for (Object cnObj : silkClassNames) {
-        String cn = (String) cnObj;
+    for (Object entryObj : silkClassMap.entrySet()) {
+        java.util.Map.Entry me = (java.util.Map.Entry) entryObj;
+        String cn = (String) me.getKey();
+        Class c = (Class) me.getValue();
+        if (c == null) continue;
         String sn = cn.substring(cn.lastIndexOf('.') + 1);
-        try {
-            Class c = null;
-            try { c = Class.forName(cn); } catch (Exception e) { }
-            if (c == null) try { c = classLoader.loadClass(cn); } catch (Exception e) { }
-            if (c == null) try { c = Thread.currentThread().getContextClassLoader().loadClass(cn); } catch (Exception e) { }
-            if (c == null) { diag.append(sn).append("? "); continue; }
             
             diag.append(sn).append(":[");
             java.lang.reflect.Method[] ms = c.getDeclaredMethods();
