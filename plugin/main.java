@@ -1460,7 +1460,8 @@ void handleAi(Object msg, String prompt) {
         }
     }
 
-    if (trimmed.equals("tts") || trimmed.equals("tts on") || trimmed.equals("tts off") || trimmed.equals("tts status")) {
+    if (trimmed.equals("tts") || trimmed.equals("tts on") || trimmed.equals("tts off") || trimmed.equals("tts status")
+        || trimmed.equals("tts voices") || trimmed.equals("tts voice") || trimmed.startsWith("tts voice ")) {
         if (!userRole.equals("ADMIN") && !userRole.equals("OWNER")) { sendPermissionDenied(msg); return; }
         String key = peerUin + "_" + chatType;
         if (trimmed.equals("tts") || trimmed.equals("tts on")) {
@@ -1471,6 +1472,14 @@ void handleAi(Object msg, String prompt) {
             removeFromList(pluginPath + "/config/tts_sessions.txt", key);
             if (ttsSessions != null) ttsSessions.remove(key);
             sendStyledHeader(msg, "INFO", "TTS 已关闭"); return;
+        } else if (trimmed.equals("tts voices") || trimmed.equals("tts voice")) {
+            sendStyledHeader(msg, "INFO", getVoiceList());
+            return;
+        } else if (trimmed.startsWith("tts voice ")) {
+            String v = trimmed.substring("tts voice ".length()).trim();
+            if (v.isEmpty()) { sendStyledHeader(msg, "INFO", getVoiceList()); return; }
+            setAiConfig("tts_voice", v);
+            sendStyledHeader(msg, "INFO", "音色已切换: " + v); return;
         } else {
             Set ts = readStringSet(pluginPath + "/config/tts_sessions.txt");
             sendStyledHeader(msg, "INFO", "TTS: " + (ts.contains(key) ? "已开启" : "已关闭") + " (voice:" + getTtsVoice() + ")"); return;
@@ -3136,6 +3145,41 @@ void wsSendText(OutputStream out, String text) throws Exception {
     for (int i = 0; i < len; i++) frame.write(payload[i] ^ mask[i % 4]);
     out.write(frame.toByteArray());
     out.flush();
+}
+
+String getTtsVoice() {
+    String v = getAiConfig("tts_voice");
+    return (v == null || v.isEmpty()) ? "zh-CN-XiaoxiaoNeural" : v;
+}
+
+String getVoiceList() {
+    return "可用音色:\n"
+        + "女: Xiaoxiao(默认) Xiaoyi Xiaochen Xiaohan Xiaomeng Xiaomo Xiaoqiu Xiaorui Xiaoshuang Xiaoxuan Xiaoyan Xiaozhen\n"
+        + "男: Yunxi Yunjian Yunyang Yunfeng Yunhao Yunxia Yunye Yunze\n"
+        + "用法: /ai tts voice zh-CN-YunxiNeural";
+}
+
+String generateSecMsGec() {
+    try {
+        long unixSec = System.currentTimeMillis() / 1000;
+        long winSec = unixSec + 11644473600L;
+        winSec = winSec - (winSec % 300);
+        long ticks = winSec * 10000000L;
+        String raw = String.valueOf(ticks) + "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        byte[] hash = md.digest(raw.getBytes("ASCII"));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < hash.length; i++) sb.append(String.format("%02X", hash[i] & 0xFF));
+        return sb.toString();
+    } catch (Exception e) { return ""; }
+}
+
+String generateMuid() {
+    byte[] b = new byte[16];
+    new Random().nextBytes(b);
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < b.length; i++) sb.append(String.format("%02X", b[i] & 0xFF));
+    return sb.toString();
 }
 
 String maskApiKey(String key) {
