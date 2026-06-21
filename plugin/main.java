@@ -3092,53 +3092,86 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     return diag.toString();
 }
 
-// Try to use QQ's own native SILK library directly
+// Try to use QQ's own native SILK library (already loaded in process)
 boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
-    // QQ ships with silk codec libraries - try to find and use them
-    String[] libNames = {
-        "silk_codec", "silk", "SilkCodec", "qqsilk", "tencent_silk",
-        "pnssilk", "silkcommon", "libsilk", "codec_silk", "avsilk",
-        "silk_enc", "qq_silk", "tav_silk"
+    // Found in /proc/self/maps: /libcodecsilk.so is QQ's SILK codec
+    // Look for the Java wrapper class that uses this library
+    String[] wrapperClasses = {
+        "com.tencent.codecsilk.SilkEncoder",
+        "com.tencent.mobileqq.codecsilk.SilkUtil",
+        "com.tencent.qqnt.codecsilk.CodecSilk",
+        "com.tencent.av.codecsilk.SilkWrapper",
+        "com.tencent.silkcodec.SilkCodec",
+        "com.tencent.mobileqq.ptt.codecsilk.SilkHelper",
+        "com.tencent.qqnt.ptt.codec.SilkCodec",
+        "com.tencent.qqnt.kernel.codecsilk.SilkEncoder",
     };
-    for (int li = 0; li < libNames.length; li++) {
-        String lib = libNames[li];
-        try {
-            System.loadLibrary(lib);
-            diag.append("[NAT]loaded ").append(lib).append(" ");
-            // Library loaded - now try to find and call encode functions
-            // Common SILK API pattern: int silk_encode(short* pcm, int samples, byte* out)
-            // We can try to use JNI reflection to find native methods
-        } catch (Throwable t) {
-            // Library not found, try next
-        }
-    }
     
-    // Alternative: scan /proc/self/maps for silk-related .so files
+    // Also brute-force search all loaded classes for "codecsilk"
+    java.util.Set silkClassNames = new java.util.LinkedHashSet();
+    for (int i = 0; i < wrapperClasses.length; i++) silkClassNames.add(wrapperClasses[i]);
     try {
-        java.io.BufferedReader br = new java.io.BufferedReader(
-            new java.io.InputStreamReader(
-                new java.io.FileInputStream("/proc/self/maps")));
-        String line;
-        java.util.Set foundLibs = new java.util.LinkedHashSet();
-        while ((line = br.readLine()) != null) {
-            String lower = line.toLowerCase();
-            if (lower.contains("silk") && lower.contains(".so")) {
-                int idx = line.lastIndexOf('/');
-                if (idx > 0) {
-                    String path = line.substring(idx);
-                    if (!foundLibs.contains(path)) {
-                        foundLibs.add(path);
-                        diag.append(path).append(" ");
+        java.lang.reflect.Field f = ClassLoader.class.getDeclaredField("classes");
+        f.setAccessible(true);
+        java.util.Vector vec = (java.util.Vector) f.get(classLoader);
+        if (vec != null) {
+            for (int vi = 0; vi < vec.size(); vi++) {
+                Object cobj = vec.get(vi);
+                if (cobj instanceof Class) {
+                    String cname = ((Class)cobj).getName().toLowerCase();
+                    if (cname.contains("codecsilk") || cname.contains("silkcodec") || cname.contains("silk_codec")) {
+                        silkClassNames.add(((Class)cobj).getName());
                     }
                 }
             }
         }
-        br.close();
-        if (foundLibs.size() > 0) {
-            diag.append("found ").append(foundLibs.size()).append(" silk .so ");
-        }
-    } catch (Exception e) {
-        diag.append("maps:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "?").append(" ");
+    } catch (Exception e) { }
+    
+    diag.append("[NAT]try ").append(silkClassNames.size()).append(" wrappers ");
+    
+    for (Object cnObj : silkClassNames) {
+        String cn = (String) cnObj;
+        try {
+            Class c = null;
+            try { c = Class.forName(cn); } catch (Exception e) { }
+            if (c == null) try { c = classLoader.loadClass(cn); } catch (Exception e) { }
+            if (c == null) continue;
+            
+            String sn = cn.substring(cn.lastIndexOf('.') + 1);
+            java.lang.reflect.Method[] ms = c.getDeclaredMethods();
+            for (java.lang.reflect.Method m : ms) {
+                String mn = m.getName().toLowerCase();
+                Class[] pt = m.getParameterTypes();
+                boolean stat = java.lang.reflect.Modifier.isStatic(m.getModifiers());
+                
+                if (!mn.contains("encod") && !mn.contains("silk") && !mn.contains("pcm2")
+                    && !mn.contains("tosilk") && !mn.contains("convert")) continue;
+                
+                m.setAccessible(true);
+                try {
+                    Object inst = stat ? null : c.newInstance();
+                    if (pt.length == 3 && pt[0] == String.class && pt[1] == String.class
+                        && (pt[2] == int.class || pt[2] == Integer.class)) {
+                        m.invoke(inst, pcmPath, silkPath, sampleRate);
+                    } else if (pt.length == 2 && pt[0] == String.class && pt[1] == String.class) {
+                        m.invoke(inst, pcmPath, silkPath);
+                    } else if (pt.length == 4 && pt[0] == String.class && pt[1] == String.class
+                        && pt[2] == int.class) {
+                        // try (String pcm, String silk, int rate, int bitrate)
+                        m.invoke(inst, pcmPath, silkPath, sampleRate, 23900);
+                    } else {
+                        continue;
+                    }
+                    File sf = new File(silkPath);
+                    if (sf.exists() && sf.length() > 100) {
+                        diag.append(sn).append(".").append(m.getName()).append(" OK! ");
+                        return true;
+                    }
+                } catch (Exception ie) {
+                    // Method exists but failed - may need different params
+                }
+            }
+        } catch (Exception e) { }
     }
     
     return false;
