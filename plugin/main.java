@@ -2037,6 +2037,7 @@ dumpMsgs.put(dj);
             String mp3Path = pluginPath + "/config/tts_" + tsNow + ".mp3";
             String pcmPath = pluginPath + "/config/tts_" + tsNow + ".pcm";
             String silkPath = pluginPath + "/config/tts_" + tsNow + ".silk";
+            String amrPath = pluginPath + "/config/tts_" + tsNow + ".amr";
             try {
                 String err = edgeTTS(ttsText, getTtsVoice(), mp3Path);
                 if (err != null) {
@@ -2051,20 +2052,33 @@ dumpMsgs.put(dj);
                         String convErr = convertPcmToSilk(pcmPath, silkPath, 24000);
                         if (convErr != null) {
                             log("error.txt", "TTS silk: " + convErr);
-                            if (debug) sendDebug(peerUin, chatType, "TTS 转码失败: " + convErr + "\n尝试mp3直发...");
-                            try { sendPtt(peerUin, mp3Path, chatType); } catch (Exception mp3e) {
-                                log("error.txt", "TTS mp3 fallback: " + mp3e.getMessage());
-                                if (debug) sendDebug(peerUin, chatType, "TTS mp3直发也失败: " + mp3e.getMessage());
-                            }
-                        } else {
-                            File sf = new File(silkPath);
-                            long sz = sf.length();
-                            if (debug) sendDebug(peerUin, chatType, "TTS silk: " + sz + " bytes");
-                            if (sz > 100) {
-                                sendPtt(peerUin, silkPath, chatType);
-                            } else {
-                                log("error.txt", "TTS: silk too small (" + sz + " bytes)");
-                            }
+                            if (debug) sendDebug(peerUin, chatType, "TTS SILK失败: " + convErr);
+                        }
+                        // Also try AMR encoding (pure Java, no root needed)
+                        StringBuilder amrDiag = new StringBuilder();
+                        String amrErr = tryAmrEncode(pcmPath, amrPath, 24000, amrDiag);
+                        if (amrErr != null && debug) {
+                            sendDebug(peerUin, chatType, "TTS AMR: " + amrDiag.toString());
+                        }
+                        // Try sending: prefer .silk, fallback to .amr, last .mp3
+                        File sf = new File(silkPath);
+                        File af = new File(amrPath);
+                        boolean sent = false;
+                        if (sf.exists() && sf.length() > 100) {
+                            if (debug) sendDebug(peerUin, chatType, "TTS send silk: " + sf.length() + " bytes");
+                            try { sendPtt(peerUin, silkPath, chatType); sent = true; }
+                            catch (Exception se) { log("error.txt", "TTS send silk: " + se.getMessage()); }
+                        }
+                        if (!sent && af.exists() && af.length() > 100) {
+                            if (debug) sendDebug(peerUin, chatType, "TTS send amr: " + af.length() + " bytes");
+                            try { sendPtt(peerUin, amrPath, chatType); sent = true; }
+                            catch (Exception ae) { log("error.txt", "TTS send amr: " + ae.getMessage()); }
+                        }
+                        if (!sent) {
+                            log("error.txt", "TTS: all encode failed, trying mp3 raw");
+                            if (debug) sendDebug(peerUin, chatType, "TTS: trying mp3 fallback...");
+                            try { sendPtt(peerUin, mp3Path, chatType); }
+                            catch (Exception mp3e) { log("error.txt", "TTS all formats failed"); }
                         }
                     }
                 }
@@ -2074,6 +2088,7 @@ dumpMsgs.put(dj);
                 try { new File(mp3Path).delete(); } catch (Exception ignored) { }
                 try { new File(pcmPath).delete(); } catch (Exception ignored) { }
                 try { new File(silkPath).delete(); } catch (Exception ignored) { }
+                try { new File(amrPath).delete(); } catch (Exception ignored) { }
             }
         }
     }
@@ -3080,10 +3095,18 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     try { if (trySilkQQ(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S1:").append(e.getMessage()).append("\n"); }
 
-    // Strategy 2: JNI .so via loadJava/loadDex/DexClassLoader + System.load (dlopen works without root)
+    // Strategy 2: JNI .so via loadJava/loadDex + System.load
     try { if (trySilkJNI(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S2:").append(e.getMessage()).append("\n"); }
 
+    return diag.toString();
+}
+
+// Try AMR encoding separately, outputs to amrPath
+String tryAmrEncode(String pcmPath, String amrPath, int sampleRate, StringBuilder diag) {
+    try {
+        if (tryAmrMediaCodec(pcmPath, amrPath, sampleRate, diag)) return null;
+    } catch (Exception e) { diag.append("AMR:").append(e.getMessage()).append("\n"); }
     return diag.toString();
 }
 
@@ -3295,8 +3318,10 @@ boolean tryAmrMediaCodec(String pcmPath, String silkPath, int sampleRate, String
         int pcmSize = (int) pcmFile.length();
         fis = new FileInputStream(pcmFile);
 
-        // Write AMR to output path (use .amr extension internally, but output to silkPath for compatibility)
+        // Write AMR to output path
         fos = new FileOutputStream(silkPath);
+        // AMR-WB file header (required for QQ voice recognition)
+        fos.write("#!AMR-WB\n".getBytes("ASCII"));
 
         android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
         boolean inputDone = false;
