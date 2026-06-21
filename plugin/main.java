@@ -3123,6 +3123,7 @@ String edgeTTS(String text, String voice, String outputPath) {
 
             if (opcode == 1) {
                 String txt = new String(payload, "UTF-8");
+                log("error.txt", "TTS frame[" + frameCount + "] op=" + opcode + " len=" + plen + " txt=" + (txt.length() > 300 ? txt.substring(0, 300) : txt));
                 if (txt.contains("Path:turn.end")) break;
             } else if (opcode == 2) {
                 binFrames++;
