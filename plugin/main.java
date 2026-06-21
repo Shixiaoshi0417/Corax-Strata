@@ -2051,7 +2051,11 @@ dumpMsgs.put(dj);
                         String convErr = convertPcmToSilk(pcmPath, silkPath, 24000);
                         if (convErr != null) {
                             log("error.txt", "TTS silk: " + convErr);
-                            if (debug) sendDebug(peerUin, chatType, "TTS 转码失败: " + convErr);
+                            if (debug) sendDebug(peerUin, chatType, "TTS 转码失败: " + convErr + "\n尝试mp3直发...");
+                            try { sendPtt(peerUin, mp3Path, chatType); } catch (Exception mp3e) {
+                                log("error.txt", "TTS mp3 fallback: " + mp3e.getMessage());
+                                if (debug) sendDebug(peerUin, chatType, "TTS mp3直发也失败: " + mp3e.getMessage());
+                            }
                         } else {
                             File sf = new File(silkPath);
                             long sz = sf.length();
@@ -3070,71 +3074,196 @@ String decodeMp3ToPcm(String mp3Path, String pcmPath) {
 }
 
 String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
-    try {
-        String internalDir = null;
+    StringBuilder diag = new StringBuilder();
+
+    // Strategy 1: QQ internal SILK encoder via classLoader
+    try { if (trySilkQQ(pcmPath, silkPath, sampleRate, diag)) return null; }
+    catch (Exception e) { diag.append("S1:").append(e.getMessage()).append("\n"); }
+
+    // Strategy 2: JNI .so via loadJava + System.load (dlopen has different SELinux rules than exec)
+    try { if (trySilkJNI(pcmPath, silkPath, sampleRate, diag)) return null; }
+    catch (Exception e) { diag.append("S2:").append(e.getMessage()).append("\n"); }
+
+    // Strategy 3: exec binary from code_cache / app dirs
+    try { if (trySilkExec(pcmPath, silkPath, sampleRate, diag)) return null; }
+    catch (Exception e) { diag.append("S3:").append(e.getMessage()).append("\n"); }
+
+    return diag.toString();
+}
+
+boolean trySilkQQ(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
+    String[] names = {
+        "com.tencent.mobileqq.ptt.SilkEncDec",
+        "com.tencent.mobileqq.transfile.SilkEncDec",
+        "com.tencent.mobileqq.utils.SilkEncDec",
+        "com.tencent.silk.SilkEncDec",
+        "com.tencent.mobileqq.silk.SilkEncDec",
+        "com.tencent.av.codec.silk.SilkEncoder",
+        "com.tencent.silk.SilkCodec",
+        "com.tencent.qqnt.aio.adapter.ptt.PttHelper"
+    };
+    for (String cn : names) {
+        try {
+            Class c = classLoader.loadClass(cn);
+            String sn = cn.substring(cn.lastIndexOf('.') + 1);
+            diag.append("[QQ]").append(sn).append(": ");
+            java.lang.reflect.Method[] ms = c.getDeclaredMethods();
+            for (java.lang.reflect.Method m : ms) {
+                String mn = m.getName().toLowerCase();
+                Class[] pt = m.getParameterTypes();
+                boolean stat = java.lang.reflect.Modifier.isStatic(m.getModifiers());
+                diag.append(m.getName()).append("/").append(pt.length).append(" ");
+                if (!mn.contains("encod") && !mn.contains("silk") && !mn.contains("pcm2")
+                    && !mn.contains("tosilk") && !mn.contains("convert")) continue;
+                m.setAccessible(true);
+                try {
+                    Object inst = stat ? null : c.newInstance();
+                    if (pt.length == 3 && pt[0] == String.class && pt[1] == String.class
+                        && (pt[2] == int.class || pt[2] == Integer.class))
+                        m.invoke(inst, pcmPath, silkPath, sampleRate);
+                    else if (pt.length == 2 && pt[0] == String.class && pt[1] == String.class)
+                        m.invoke(inst, pcmPath, silkPath);
+                    else continue;
+                    File sf = new File(silkPath);
+                    if (sf.exists() && sf.length() > 100) { diag.append("OK! "); return true; }
+                } catch (Exception ie) {
+                    String em = ie.getMessage();
+                    diag.append("!").append(em != null ? em.substring(0, Math.min(40, em.length())) : "null").append(" ");
+                }
+            }
+            diag.append("\n");
+        } catch (ClassNotFoundException e) { /* skip */ }
+        catch (Exception e) { diag.append("[QQ]").append(cn.substring(cn.lastIndexOf('.')+1)).append(":").append(e.getMessage()).append("\n"); }
+    }
+    return false;
+}
+
+boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
+    String soSrc = pluginPath + "/bin/libsilkjni.so";
+    String javaSrc = pluginPath + "/bin/SilkJNI.java";
+    if (!new File(soSrc).exists()) { diag.append("[JNI]no .so\n"); return false; }
+    if (!new File(javaSrc).exists()) { diag.append("[JNI]no .java\n"); return false; }
+
+    // Copy .so to internal dir (System.load needs accessible path)
+    String soDir = null;
+    try { soDir = ((File) context.getClass().getMethod("getFilesDir").invoke(context)).getAbsolutePath(); }
+    catch (Exception e) {
         try {
             Object at = Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null);
             Object app = at.getClass().getMethod("getApplication").invoke(at);
-            File fdir = (File) app.getClass().getMethod("getFilesDir").invoke(app);
-            internalDir = fdir.getAbsolutePath();
-        } catch (Exception e) {
-            internalDir = "/data/data/com.tencent.mobileqq/files";
-        }
-        String encoderPath = internalDir + "/silk_encoder";
-        File encoderFile = new File(encoderPath);
-        if (!encoderFile.exists()) {
-            File srcFile = new File(pluginPath + "/bin/silk_encoder");
-            if (srcFile.exists()) {
-                FileInputStream fis = new FileInputStream(srcFile);
-                FileOutputStream fos2 = new FileOutputStream(encoderPath);
-                byte[] buf = new byte[8192]; int n;
-                while ((n = fis.read(buf)) > 0) fos2.write(buf, 0, n);
-                fos2.close(); fis.close();
-            } else {
-                String url = "https://github.com/shixiaoshi0417/Corax-Strata/raw/main/plugin/bin/silk_encoder";
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-                conn.setInstanceFollowRedirects(true);
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(30000);
-                int code = conn.getResponseCode();
-                if (code == 302 || code == 301) {
-                    String loc = conn.getHeaderField("Location");
-                    conn.disconnect();
-                    conn = (java.net.HttpURLConnection) new java.net.URL(loc).openConnection();
-                    conn.setConnectTimeout(15000);
-                    conn.setReadTimeout(30000);
-                    code = conn.getResponseCode();
-                }
-                if (code != 200) { conn.disconnect(); return "download encoder failed: HTTP " + code; }
-                InputStream dis = conn.getInputStream();
-                FileOutputStream dout = new FileOutputStream(encoderPath);
-                byte[] buf = new byte[8192]; int n;
-                while ((n = dis.read(buf)) > 0) dout.write(buf, 0, n);
-                dout.close(); dis.close(); conn.disconnect();
-            }
-        }
-        encoderFile.setExecutable(true, false);
-        Runtime.getRuntime().exec(new String[]{"chmod", "755", encoderPath}).waitFor();
-        String args = encoderPath + " " + pcmPath + " " + silkPath + " -Fs_API " + sampleRate + " -tencent -quiet";
-        String[] cmd = new String[]{encoderPath, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"};
-        Process proc = null;
-        try { proc = Runtime.getRuntime().exec(cmd); }
-        catch (Exception e1) {
-            try { proc = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", args}); }
-            catch (Exception e2) { return "exec failed: " + e1.getMessage() + " / sh: " + e2.getMessage(); }
-        }
-        int exitCode = proc.waitFor();
-        if (exitCode != 0) {
-            InputStream es = proc.getErrorStream();
-            byte[] eb = new byte[512];
-            int el = es.read(eb);
-            String emsg = el > 0 ? new String(eb, 0, el) : "exit=" + exitCode;
-            return "encoder: " + emsg;
-        }
-        return null;
-    } catch (Exception e) {
-        return e.getClass().getSimpleName() + ": " + e.getMessage();
+            soDir = ((File) app.getClass().getMethod("getFilesDir").invoke(app)).getAbsolutePath();
+        } catch (Exception e2) { soDir = "/data/data/com.tencent.mobileqq/files"; }
     }
+    String soDest = soDir + "/libsilkjni.so";
+    try {
+        File df = new File(soDest);
+        if (!df.exists() || df.length() != new File(soSrc).length()) {
+            FileInputStream fis = new FileInputStream(soSrc); FileOutputStream fos = new FileOutputStream(soDest);
+            byte[] buf = new byte[8192]; int n; while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
+            fos.close(); fis.close();
+        }
+    } catch (Exception e) { diag.append("[JNI]copy:").append(e.getMessage()).append("\n"); return false; }
+
+    // Load Java class via loadJava
+    try { loadJava(javaSrc); } catch (Exception e) { diag.append("[JNI]loadJava:").append(e.getMessage()).append("\n"); }
+
+    // Try to find the SilkJNI class
+    Class silkClass = null;
+    try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
+    if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
+    if (silkClass == null) {
+        diag.append("[JNI]class not found\n");
+        return false;
+    }
+
+    // Load native library via the class's own method
+    try {
+        java.lang.reflect.Method loadM = silkClass.getMethod("loadNative", String.class);
+        Object loadResult = loadM.invoke(null, soDest);
+        if (loadResult != null) { diag.append("[JNI]load:").append(loadResult).append("\n"); return false; }
+    } catch (Exception e) {
+        diag.append("[JNI]load err:").append(e.getMessage()).append("\n");
+        return false;
+    }
+
+    // Call encode
+    try {
+        java.lang.reflect.Method encM = silkClass.getMethod("encode", String.class, String.class, int.class);
+        Object ret = encM.invoke(null, pcmPath, silkPath, sampleRate);
+        int retCode = ((Number) ret).intValue();
+        if (retCode == 0 && new File(silkPath).exists() && new File(silkPath).length() > 100) {
+            diag.append("[JNI]OK! ");
+            return true;
+        }
+        diag.append("[JNI]encode ret=").append(retCode).append("\n");
+    } catch (Exception e) {
+        diag.append("[JNI]encode:").append(e.getMessage()).append("\n");
+    }
+    return false;
+}
+
+boolean trySilkExec(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
+    String srcBin = pluginPath + "/bin/silk_encoder";
+    if (!new File(srcBin).exists()) {
+        try {
+            String url = "https://github.com/shixiaoshi0417/Corax-Strata/raw/main/plugin/bin/silk_encoder";
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true); conn.setConnectTimeout(15000); conn.setReadTimeout(30000);
+            int code = conn.getResponseCode();
+            if (code == 302 || code == 301) {
+                conn = (java.net.HttpURLConnection) new java.net.URL(conn.getHeaderField("Location")).openConnection();
+                conn.setConnectTimeout(15000); conn.setReadTimeout(30000); code = conn.getResponseCode();
+            }
+            if (code != 200) { conn.disconnect(); diag.append("download:HTTP").append(code).append("\n"); return false; }
+            new File(pluginPath + "/bin").mkdirs();
+            InputStream dis = conn.getInputStream(); FileOutputStream dout = new FileOutputStream(srcBin);
+            byte[] buf = new byte[8192]; int n; while ((n = dis.read(buf)) > 0) dout.write(buf, 0, n);
+            dout.close(); dis.close(); conn.disconnect();
+        } catch (Exception e) { diag.append("download:").append(e.getMessage()).append("\n"); return false; }
+    }
+
+    java.util.List dirs = new java.util.ArrayList();
+    try { dirs.add(((File) context.getClass().getMethod("getCodeCacheDir").invoke(context)).getAbsolutePath()); }
+    catch (Exception e) { diag.append("cc:").append(e.getMessage()).append(" "); }
+    try { dirs.add(((File) context.getClass().getMethod("getDir", String.class, int.class).invoke(context, "silk", 0)).getAbsolutePath()); }
+    catch (Exception e) { }
+    try { dirs.add(((File) context.getClass().getMethod("getFilesDir").invoke(context)).getAbsolutePath()); }
+    catch (Exception e) { }
+    if (dirs.isEmpty()) {
+        try {
+            Object at = Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null);
+            Object app = at.getClass().getMethod("getApplication").invoke(at);
+            dirs.add(((File) app.getClass().getMethod("getFilesDir").invoke(app)).getAbsolutePath());
+        } catch (Exception e) { dirs.add("/data/data/com.tencent.mobileqq/code_cache"); }
+    }
+
+    for (Object dirObj : dirs) {
+        String dir = (String) dirObj;
+        String ep = dir + "/silk_encoder";
+        String dn = dir.substring(dir.lastIndexOf('/') + 1);
+        diag.append("[exec]").append(dn).append(": ");
+        try {
+            File ef = new File(ep);
+            if (!ef.exists()) {
+                new File(dir).mkdirs();
+                FileInputStream fis = new FileInputStream(srcBin); FileOutputStream fos = new FileOutputStream(ep);
+                byte[] buf = new byte[8192]; int n; while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
+                fos.close(); fis.close();
+            }
+            ef.setExecutable(true, false);
+            Runtime.getRuntime().exec(new String[]{"chmod", "755", ep}).waitFor();
+            Process proc = Runtime.getRuntime().exec(new String[]{ep, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"});
+            int exit = proc.waitFor();
+            if (exit == 0 && new File(silkPath).exists() && new File(silkPath).length() > 100) return true;
+            InputStream es = proc.getErrorStream(); byte[] eb = new byte[256]; int el = es.read(eb);
+            diag.append(el > 0 ? new String(eb, 0, el).trim() : "exit=" + exit);
+        } catch (Exception e) {
+            String em = e.getMessage();
+            diag.append(em != null ? em.substring(0, Math.min(60, em.length())) : "error");
+        }
+        diag.append("\n");
+    }
+    return false;
 }
 
 String getTtsVoice() {
