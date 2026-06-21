@@ -3165,18 +3165,32 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
     } catch (Exception e) { diag.append("[JNI]copy:").append(e.getMessage()).append("\n"); return false; }
 
     // Load DEX containing SilkJNI class
-    try { loadDex(dexSrc); } catch (Exception e) { diag.append("[JNI]loadDex:").append(e.getMessage()).append("\n"); }
+    boolean dexLoaded = false;
+    try {
+        loadDex(dexSrc);
+        dexLoaded = true;
+    } catch (Exception e) { diag.append("[JNI]loadDex:").append(e.getMessage()).append("\n"); }
 
-    // Try to find the SilkJNI class from multiple classloaders
+    // Try DexClassLoader as fallback
     Class silkClass = null;
-    try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
-    if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
-    if (silkClass == null) {
-        // Try Thread context classloader
-        try { silkClass = Thread.currentThread().getContextClassLoader().loadClass("SilkJNI"); } catch (Exception e) { }
+    if (dexLoaded) {
+        try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
+        if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
+        if (silkClass == null) try { silkClass = Thread.currentThread().getContextClassLoader().loadClass("SilkJNI"); } catch (Exception e) { }
     }
     if (silkClass == null) {
-        diag.append("[JNI]class not found after loadDex\n");
+        // Fallback: use DexClassLoader directly
+        try {
+            dalvik.system.DexClassLoader dcl = new dalvik.system.DexClassLoader(
+                dexSrc, soDir, null, classLoader);
+            silkClass = dcl.loadClass("SilkJNI");
+            diag.append("[JNI]DexClassLoader ");
+        } catch (Exception e) {
+            diag.append("[JNI]DexCL:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "err").append("\n");
+        }
+    }
+    if (silkClass == null) {
+        diag.append("[JNI]class not found\n");
         return false;
     }
     diag.append("[JNI]class loaded ");
@@ -3235,6 +3249,9 @@ boolean trySilkExec(String pcmPath, String silkPath, int sampleRate, StringBuild
     catch (Exception e) { }
     try { dirs.add(((File) context.getClass().getMethod("getFilesDir").invoke(context)).getAbsolutePath()); }
     catch (Exception e) { }
+    // Additional writable+executable dirs for Android
+    dirs.add("/data/local/tmp");
+    try { dirs.add(pluginPath + "/bin"); } catch (Exception e) { }
     if (dirs.isEmpty()) {
         try {
             Object at = Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null);
@@ -3257,12 +3274,31 @@ boolean trySilkExec(String pcmPath, String silkPath, int sampleRate, StringBuild
                 fos.close(); fis.close();
             }
             ef.setExecutable(true, false);
+            ef.setReadable(true, false);
             Runtime.getRuntime().exec(new String[]{"chmod", "755", ep}).waitFor();
-            Process proc = Runtime.getRuntime().exec(new String[]{ep, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"});
-            int exit = proc.waitFor();
+            // Try direct exec first
+            Process proc = null;
+            int exit = -1;
+            try {
+                proc = Runtime.getRuntime().exec(new String[]{ep, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"});
+                exit = proc.waitFor();
+            } catch (Exception ex1) {
+                // Fallback: use sh -c wrapper
+                try {
+                    diag.append("sh:");
+                    proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", "\"" + ep + "\" \"" + pcmPath + "\" \"" + silkPath + "\" -Fs_API " + sampleRate + " -tencent -quiet"});
+                    exit = proc.waitFor();
+                } catch (Exception ex2) {
+                    diag.append(ex2.getMessage() != null ? ex2.getMessage().substring(0, Math.min(40, ex2.getMessage().length())) : "sh-err");
+                }
+            }
             if (exit == 0 && new File(silkPath).exists() && new File(silkPath).length() > 100) return true;
-            InputStream es = proc.getErrorStream(); byte[] eb = new byte[256]; int el = es.read(eb);
-            diag.append(el > 0 ? new String(eb, 0, el).trim() : "exit=" + exit);
+            if (proc != null) {
+                InputStream es = proc.getErrorStream(); byte[] eb = new byte[256]; int el = es.read(eb);
+                diag.append(el > 0 ? new String(eb, 0, el).trim() : "exit=" + exit);
+            } else {
+                diag.append("no-proc");
+            }
         } catch (Exception e) {
             String em = e.getMessage();
             diag.append(em != null ? em.substring(0, Math.min(60, em.length())) : "error");
