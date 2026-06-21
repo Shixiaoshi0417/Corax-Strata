@@ -2033,27 +2033,35 @@ dumpMsgs.put(dj);
     if (ttsOn && ttsReply.length() > 0) {
         String ttsText = ttsReply.toString().trim();
         if (!ttsText.isEmpty()) {
-            String audioPath = pluginPath + "/config/tts_" + System.currentTimeMillis() + ".silk";
+            long tsNow = System.currentTimeMillis();
+            String pcmPath = pluginPath + "/config/tts_" + tsNow + ".pcm";
+            String silkPath = pluginPath + "/config/tts_" + tsNow + ".silk";
             try {
-                String err = edgeTTS(ttsText, getTtsVoice(), audioPath);
-                if (err == null) {
-                    File af = new File(audioPath);
-                    long sz = af.length();
-                    if (debug) sendDebug(peerUin, chatType, "TTS audio: " + sz + " bytes");
-                    if (sz > 100) {
-                        sendPtt(peerUin, audioPath, chatType);
-                    } else {
-                        log("error.txt", "TTS: audio too small (" + sz + " bytes)");
-                        if (debug) sendDebug(peerUin, chatType, "TTS 音频太小: " + sz + " bytes");
-                    }
-                } else {
-                    log("error.txt", "TTS: " + err);
+                String err = edgeTTSWithFormat(ttsText, getTtsVoice(), pcmPath, "raw-24khz-16bit-mono-pcm");
+                if (err != null) {
+                    log("error.txt", "TTS(pcm): " + err);
                     if (debug) sendDebug(peerUin, chatType, "TTS 失败: " + err);
+                } else {
+                    String convErr = convertPcmToSilk(pcmPath, silkPath, 24000);
+                    if (convErr != null) {
+                        log("error.txt", "TTS silk conv: " + convErr);
+                        if (debug) sendDebug(peerUin, chatType, "TTS 转码失败: " + convErr);
+                    } else {
+                        File sf = new File(silkPath);
+                        long sz = sf.length();
+                        if (debug) sendDebug(peerUin, chatType, "TTS silk: " + sz + " bytes");
+                        if (sz > 100) {
+                            sendPtt(peerUin, silkPath, chatType);
+                        } else {
+                            log("error.txt", "TTS: silk too small (" + sz + " bytes)");
+                        }
+                    }
                 }
             } catch (Exception e) {
                 log("error.txt", "TTS exception: " + e.getMessage());
             } finally {
-                try { new File(audioPath).delete(); } catch (Exception ignored) { }
+                try { new File(pcmPath).delete(); } catch (Exception ignored) { }
+                try { new File(silkPath).delete(); } catch (Exception ignored) { }
             }
         }
     }
@@ -2990,6 +2998,52 @@ void handleAiForget(Object msg, String keyword) {
 }
 
 // ==================== Edge TTS ====================
+
+String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
+    try {
+        String encoderPath = pluginPath + "/bin/silk_encoder";
+        File encoderFile = new File(encoderPath);
+        if (!encoderFile.exists()) {
+            new File(pluginPath + "/bin").mkdirs();
+            String url = "https://github.com/shixiaoshi0417/Corax-Strata/raw/main/plugin/bin/silk_encoder";
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            int code = conn.getResponseCode();
+            if (code == 302 || code == 301) {
+                String loc = conn.getHeaderField("Location");
+                conn.disconnect();
+                conn = (java.net.HttpURLConnection) new java.net.URL(loc).openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                code = conn.getResponseCode();
+            }
+            if (code != 200) { conn.disconnect(); return "download encoder failed: HTTP " + code; }
+            InputStream dis = conn.getInputStream();
+            FileOutputStream dout = new FileOutputStream(encoderPath);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = dis.read(buf)) > 0) dout.write(buf, 0, n);
+            dout.close(); dis.close(); conn.disconnect();
+        }
+        encoderFile.setExecutable(true);
+        String[] cmd = new String[]{encoderPath, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"};
+        Process proc = Runtime.getRuntime().exec(cmd);
+        int exitCode = proc.waitFor();
+        if (exitCode != 0) {
+            InputStream es = proc.getErrorStream();
+            byte[] eb = new byte[512];
+            int el = es.read(eb);
+            String emsg = el > 0 ? new String(eb, 0, el) : "exit=" + exitCode;
+            return "encoder: " + emsg;
+        }
+        return null;
+    } catch (Exception e) {
+        return e.getClass().getSimpleName() + ": " + e.getMessage();
+    }
+}
+
 String getTtsVoice() {
     String v = getAiConfig("tts_voice");
     return (v == null || v.isEmpty()) ? "zh-CN-XiaoxiaoNeural" : v;
@@ -3018,7 +3072,9 @@ String generateMuid() {
     return sb.toString();
 }
 
-String edgeTTS(String text, String voice, String outputPath) {
+String edgeTTS(String text, String voice, String outputPath) { return edgeTTSWithFormat(text, voice, outputPath, "audio-24khz-48kbitrate-mono-mp3"); }
+
+String edgeTTSWithFormat(String text, String voice, String outputPath, String outputFormat) {
     if (text == null || text.trim().isEmpty()) return "empty text";
     text = text.trim();
     if (text.length() > 3000) text = text.substring(0, 3000);
@@ -3082,7 +3138,7 @@ String edgeTTS(String text, String voice, String outputPath) {
         String ts = isoFmt.format(new Date());
 
         String config = "X-Timestamp:" + ts + "\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
-            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"raw-24khz-16bit-mono-truesilk\"}}}}\r\n";
+            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"" + outputFormat + "\"}}}}\r\n";
         wsSendText(out, config);
 
         String escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
@@ -3094,7 +3150,6 @@ String edgeTTS(String text, String voice, String outputPath) {
         wsSendText(out, ssml);
 
         fos = new FileOutputStream(outputPath);
-        fos.write(new byte[]{0x23, 0x21, 0x53, 0x49, 0x4C, 0x4B, 0x5F, 0x56, 0x33, 0x0A}); // #!SILK_V3\n
         boolean audioReceived = false;
         int totalAudioBytes = 0;
         int frameCount = 0;
