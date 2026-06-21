@@ -3140,11 +3140,11 @@ boolean trySilkQQ(String pcmPath, String silkPath, int sampleRate, StringBuilder
 
 boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
     String soSrc = pluginPath + "/bin/libsilkjni.so";
-    String javaSrc = pluginPath + "/bin/SilkJNI.java";
+    String dexSrc = pluginPath + "/bin/silkjni.dex";
     if (!new File(soSrc).exists()) { diag.append("[JNI]no .so\n"); return false; }
-    if (!new File(javaSrc).exists()) { diag.append("[JNI]no .java\n"); return false; }
+    if (!new File(dexSrc).exists()) { diag.append("[JNI]no .dex\n"); return false; }
 
-    // Copy .so to internal dir (System.load needs accessible path)
+    // Get internal dir for .so copy
     String soDir = null;
     try { soDir = ((File) context.getClass().getMethod("getFilesDir").invoke(context)).getAbsolutePath(); }
     catch (Exception e) {
@@ -3164,27 +3164,33 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
         }
     } catch (Exception e) { diag.append("[JNI]copy:").append(e.getMessage()).append("\n"); return false; }
 
-    // Load Java class via loadJava
-    try { loadJava(javaSrc); } catch (Exception e) { diag.append("[JNI]loadJava:").append(e.getMessage()).append("\n"); }
+    // Load DEX containing SilkJNI class
+    try { loadDex(dexSrc); } catch (Exception e) { diag.append("[JNI]loadDex:").append(e.getMessage()).append("\n"); }
 
-    // Try to find the SilkJNI class
+    // Try to find the SilkJNI class from multiple classloaders
     Class silkClass = null;
     try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
     if (silkClass == null) try { silkClass = classLoader.loadClass("SilkJNI"); } catch (Exception e) { }
     if (silkClass == null) {
-        diag.append("[JNI]class not found\n");
+        // Try Thread context classloader
+        try { silkClass = Thread.currentThread().getContextClassLoader().loadClass("SilkJNI"); } catch (Exception e) { }
+    }
+    if (silkClass == null) {
+        diag.append("[JNI]class not found after loadDex\n");
         return false;
     }
+    diag.append("[JNI]class loaded ");
 
-    // Load native library via the class's own method
+    // Load native library via the class's own loadNative method
     try {
         java.lang.reflect.Method loadM = silkClass.getMethod("loadNative", String.class);
         Object loadResult = loadM.invoke(null, soDest);
-        if (loadResult != null) { diag.append("[JNI]load:").append(loadResult).append("\n"); return false; }
+        if (loadResult != null) { diag.append("load:").append(loadResult).append("\n"); return false; }
     } catch (Exception e) {
-        diag.append("[JNI]load err:").append(e.getMessage()).append("\n");
+        diag.append("load err:").append(e.getMessage()).append("\n");
         return false;
     }
+    diag.append("so loaded ");
 
     // Call encode
     try {
@@ -3192,12 +3198,12 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
         Object ret = encM.invoke(null, pcmPath, silkPath, sampleRate);
         int retCode = ((Number) ret).intValue();
         if (retCode == 0 && new File(silkPath).exists() && new File(silkPath).length() > 100) {
-            diag.append("[JNI]OK! ");
+            diag.append("OK!\n");
             return true;
         }
-        diag.append("[JNI]encode ret=").append(retCode).append("\n");
+        diag.append("ret=").append(retCode).append("\n");
     } catch (Exception e) {
-        diag.append("[JNI]encode:").append(e.getMessage()).append("\n");
+        diag.append("encode:").append(e.getMessage()).append("\n");
     }
     return false;
 }
