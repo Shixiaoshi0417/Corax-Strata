@@ -3021,16 +3021,22 @@ String edgeTTS(String text, String voice, String outputPath) {
         String secGec = generateSecMsGec();
 
         StringBuilder req = new StringBuilder();
-        req.append("GET /consumer/speech/synthesize/restream/v1/hubs/SpeechHub?Sec-MS-GEC=").append(secGec);
+        req.append("GET /consumer/speech/synthesize/restream/v1/hubs/SpeechHub");
+        req.append("?Sec-MS-GEC=").append(secGec);
         req.append("&Sec-MS-GEC-Version=1-130.0.2849.68");
         req.append("&ConnectionId=").append(connId);
-        req.append("&X-ConnectionId=").append(connId).append(" HTTP/1.1\r\n");
+        req.append(" HTTP/1.1\r\n");
         req.append("Host: speech.platform.bing.com\r\n");
-        req.append("Upgrade: websocket\r\nConnection: Upgrade\r\n");
+        req.append("Upgrade: websocket\r\n");
+        req.append("Connection: Upgrade\r\n");
         req.append("Sec-WebSocket-Key: ").append(wsKey).append("\r\n");
         req.append("Sec-WebSocket-Version: 13\r\n");
-        req.append("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0\r\n");
-        req.append("Origin: chrome-extension://jdiccldimpdaibmpdmdber\r\n\r\n");
+        req.append("Accept-Encoding: gzip, deflate, br\r\n");
+        req.append("Accept-Language: en-US,en;q=0.9\r\n");
+        req.append("Cache-Control: no-cache\r\n");
+        req.append("Pragma: no-cache\r\n");
+        req.append("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.2849.68 Safari/537.36 Edg/130.0.2849.68\r\n");
+        req.append("\r\n");
         out.write(req.toString().getBytes("UTF-8"));
         out.flush();
 
@@ -3047,7 +3053,7 @@ String edgeTTS(String text, String voice, String outputPath) {
             else if (b == '\r') st = 1;
             else st = 0;
         }
-        if (!httpResp.toString().contains("101")) return "handshake: " + httpResp.toString().split("\r\n")[0];
+        if (!httpResp.toString().contains("101")) return "handshake(GEC=" + secGec.substring(0, Math.min(8, secGec.length())) + "): " + httpResp.toString().split("\r\n")[0];
 
         String reqId = UUID.randomUUID().toString().replace("-", "");
         String config = "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
