@@ -201,12 +201,14 @@ access 取值：OWNER(宿主) / ADMIN(管理员) / MEMBER(普通成员) / BLOCKE
 ## 项目结构
 
 ```
-Corax-RAG-Agent/
+Corax-Strata/
 ├── README.md
 ├── CHANGELOG.md
 ├── LICENSE
 ├── plugin/
-│   └── main.java              # 核心插件（单文件）
+│   ├── main.java              # 核心插件（单文件）
+│   ├── info.prop               # 插件元数据
+│   └── desc.txt                # 插件描述
 ├── skills/                     # 技能文件
 │   ├── rootmanagers.skill.txt
 │   └── 春秋检测常见检测项.skill.txt
@@ -215,7 +217,8 @@ Corax-RAG-Agent/
 ├── prompts/
 │   └── 陈千语.prompt.txt
 └── docs/
-    ├──QfunAPI.md
+    ├── QfunAPI.md
+    ├── QfunAPI-v2.md
     └── DevDocs.md
 ```
 
