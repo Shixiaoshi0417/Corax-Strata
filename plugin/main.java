@@ -3071,31 +3071,47 @@ String decodeMp3ToPcm(String mp3Path, String pcmPath) {
 
 String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     try {
-        String encoderPath = pluginPath + "/bin/silk_encoder";
+        String internalDir = null;
+        try {
+            Object at = Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null);
+            Object app = at.getClass().getMethod("getApplication").invoke(at);
+            File fdir = (File) app.getClass().getMethod("getFilesDir").invoke(app);
+            internalDir = fdir.getAbsolutePath();
+        } catch (Exception e) {
+            internalDir = "/data/data/com.tencent.mobileqq/files";
+        }
+        String encoderPath = internalDir + "/silk_encoder";
         File encoderFile = new File(encoderPath);
         if (!encoderFile.exists()) {
-            new File(pluginPath + "/bin").mkdirs();
-            String url = "https://github.com/shixiaoshi0417/Corax-Strata/raw/main/plugin/bin/silk_encoder";
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            conn.setInstanceFollowRedirects(true);
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
-            int code = conn.getResponseCode();
-            if (code == 302 || code == 301) {
-                String loc = conn.getHeaderField("Location");
-                conn.disconnect();
-                conn = (java.net.HttpURLConnection) new java.net.URL(loc).openConnection();
+            File srcFile = new File(pluginPath + "/bin/silk_encoder");
+            if (srcFile.exists()) {
+                FileInputStream fis = new FileInputStream(srcFile);
+                FileOutputStream fos2 = new FileOutputStream(encoderPath);
+                byte[] buf = new byte[8192]; int n;
+                while ((n = fis.read(buf)) > 0) fos2.write(buf, 0, n);
+                fos2.close(); fis.close();
+            } else {
+                String url = "https://github.com/shixiaoshi0417/Corax-Strata/raw/main/plugin/bin/silk_encoder";
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                conn.setInstanceFollowRedirects(true);
                 conn.setConnectTimeout(15000);
                 conn.setReadTimeout(30000);
-                code = conn.getResponseCode();
+                int code = conn.getResponseCode();
+                if (code == 302 || code == 301) {
+                    String loc = conn.getHeaderField("Location");
+                    conn.disconnect();
+                    conn = (java.net.HttpURLConnection) new java.net.URL(loc).openConnection();
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(30000);
+                    code = conn.getResponseCode();
+                }
+                if (code != 200) { conn.disconnect(); return "download encoder failed: HTTP " + code; }
+                InputStream dis = conn.getInputStream();
+                FileOutputStream dout = new FileOutputStream(encoderPath);
+                byte[] buf = new byte[8192]; int n;
+                while ((n = dis.read(buf)) > 0) dout.write(buf, 0, n);
+                dout.close(); dis.close(); conn.disconnect();
             }
-            if (code != 200) { conn.disconnect(); return "download encoder failed: HTTP " + code; }
-            InputStream dis = conn.getInputStream();
-            FileOutputStream dout = new FileOutputStream(encoderPath);
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = dis.read(buf)) > 0) dout.write(buf, 0, n);
-            dout.close(); dis.close(); conn.disconnect();
         }
         encoderFile.setExecutable(true);
         String[] cmd = new String[]{encoderPath, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"};
