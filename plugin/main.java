@@ -2034,32 +2034,40 @@ dumpMsgs.put(dj);
         String ttsText = ttsReply.toString().trim();
         if (!ttsText.isEmpty()) {
             long tsNow = System.currentTimeMillis();
+            String mp3Path = pluginPath + "/config/tts_" + tsNow + ".mp3";
             String pcmPath = pluginPath + "/config/tts_" + tsNow + ".pcm";
             String silkPath = pluginPath + "/config/tts_" + tsNow + ".silk";
             try {
-                String err = edgeTTSWithFormat(ttsText, getTtsVoice(), pcmPath, "raw-24khz-16bit-mono-pcm");
+                String err = edgeTTS(ttsText, getTtsVoice(), mp3Path);
                 if (err != null) {
-                    log("error.txt", "TTS(pcm): " + err);
+                    log("error.txt", "TTS(mp3): " + err);
                     if (debug) sendDebug(peerUin, chatType, "TTS 失败: " + err);
                 } else {
-                    String convErr = convertPcmToSilk(pcmPath, silkPath, 24000);
-                    if (convErr != null) {
-                        log("error.txt", "TTS silk conv: " + convErr);
-                        if (debug) sendDebug(peerUin, chatType, "TTS 转码失败: " + convErr);
+                    String decErr = decodeMp3ToPcm(mp3Path, pcmPath);
+                    if (decErr != null) {
+                        log("error.txt", "TTS decode: " + decErr);
+                        if (debug) sendDebug(peerUin, chatType, "TTS 解码失败: " + decErr);
                     } else {
-                        File sf = new File(silkPath);
-                        long sz = sf.length();
-                        if (debug) sendDebug(peerUin, chatType, "TTS silk: " + sz + " bytes");
-                        if (sz > 100) {
-                            sendPtt(peerUin, silkPath, chatType);
+                        String convErr = convertPcmToSilk(pcmPath, silkPath, 24000);
+                        if (convErr != null) {
+                            log("error.txt", "TTS silk: " + convErr);
+                            if (debug) sendDebug(peerUin, chatType, "TTS 转码失败: " + convErr);
                         } else {
-                            log("error.txt", "TTS: silk too small (" + sz + " bytes)");
+                            File sf = new File(silkPath);
+                            long sz = sf.length();
+                            if (debug) sendDebug(peerUin, chatType, "TTS silk: " + sz + " bytes");
+                            if (sz > 100) {
+                                sendPtt(peerUin, silkPath, chatType);
+                            } else {
+                                log("error.txt", "TTS: silk too small (" + sz + " bytes)");
+                            }
                         }
                     }
                 }
             } catch (Exception e) {
                 log("error.txt", "TTS exception: " + e.getMessage());
             } finally {
+                try { new File(mp3Path).delete(); } catch (Exception ignored) { }
                 try { new File(pcmPath).delete(); } catch (Exception ignored) { }
                 try { new File(silkPath).delete(); } catch (Exception ignored) { }
             }
@@ -2998,6 +3006,68 @@ void handleAiForget(Object msg, String keyword) {
 }
 
 // ==================== Edge TTS ====================
+
+String decodeMp3ToPcm(String mp3Path, String pcmPath) {
+    android.media.MediaExtractor extractor = null;
+    android.media.MediaCodec codec = null;
+    FileOutputStream fos = null;
+    try {
+        extractor = new android.media.MediaExtractor();
+        extractor.setDataSource(mp3Path);
+        android.media.MediaFormat format = null;
+        int trackIndex = -1;
+        for (int i = 0; i < extractor.getTrackCount(); i++) {
+            android.media.MediaFormat f = extractor.getTrackFormat(i);
+            String mime = f.getString("mime");
+            if (mime != null && mime.startsWith("audio/")) { format = f; trackIndex = i; break; }
+        }
+        if (trackIndex < 0) return "no audio track";
+        extractor.selectTrack(trackIndex);
+        String mime = format.getString("mime");
+        codec = android.media.MediaCodec.createDecoderByType(mime);
+        codec.configure(format, null, null, 0);
+        codec.start();
+        fos = new FileOutputStream(pcmPath);
+        android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+        boolean inputDone = false;
+        boolean outputDone = false;
+        while (!outputDone) {
+            if (!inputDone) {
+                int inIdx = codec.dequeueInputBuffer(10000);
+                if (inIdx >= 0) {
+                    java.nio.ByteBuffer inBuf = codec.getInputBuffer(inIdx);
+                    int sz = extractor.readSampleData(inBuf, 0);
+                    if (sz < 0) {
+                        codec.queueInputBuffer(inIdx, 0, 0, 0, 4); // BUFFER_FLAG_END_OF_STREAM=4
+                        inputDone = true;
+                    } else {
+                        codec.queueInputBuffer(inIdx, 0, sz, extractor.getSampleTime(), 0);
+                        extractor.advance();
+                    }
+                }
+            }
+            int outIdx = codec.dequeueOutputBuffer(info, 10000);
+            if (outIdx >= 0) {
+                if ((info.flags & 4) != 0) outputDone = true;
+                if (info.size > 0) {
+                    java.nio.ByteBuffer outBuf = codec.getOutputBuffer(outIdx);
+                    byte[] chunk = new byte[info.size];
+                    outBuf.get(chunk);
+                    fos.write(chunk);
+                }
+                codec.releaseOutputBuffer(outIdx, false);
+            }
+        }
+        fos.close(); fos = null;
+        return null;
+    } catch (Exception e) {
+        return e.getClass().getSimpleName() + ": " + e.getMessage();
+    } finally {
+        if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+        if (codec != null) try { codec.stop(); codec.release(); } catch (Exception ignored) {}
+        if (extractor != null) try { extractor.release(); } catch (Exception ignored) {}
+    }
+}
 
 String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     try {
