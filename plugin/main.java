@@ -3134,13 +3134,14 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
     
     for (Object cnObj : silkClassNames) {
         String cn = (String) cnObj;
+        String sn = cn.substring(cn.lastIndexOf('.') + 1);
         try {
             Class c = null;
             try { c = Class.forName(cn); } catch (Exception e) { }
             if (c == null) try { c = classLoader.loadClass(cn); } catch (Exception e) { }
-            if (c == null) continue;
+            if (c == null) try { c = Thread.currentThread().getContextClassLoader().loadClass(cn); } catch (Exception e) { }
+            if (c == null) { diag.append(sn).append("? "); continue; }
             
-            String sn = cn.substring(cn.lastIndexOf('.') + 1);
             diag.append(sn).append(":[");
             java.lang.reflect.Method[] ms = c.getDeclaredMethods();
             int tried = 0;
@@ -3148,15 +3149,11 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
                 String mn = m.getName().toLowerCase();
                 Class[] pt = m.getParameterTypes();
                 
-                // Log all method names for debugging
-                if (mn.contains("encod") || mn.contains("silk") || mn.contains("pcm") 
-                    || mn.contains("convert") || mn.contains("trans")) {
-                    diag.append(m.getName()).append("(").append(pt.length).append(") ");
-                }
+                // Log ALL methods for debugging (first 3 chars of name)
+                diag.append(m.getName().substring(0, Math.min(4, m.getName().length()))).append("/").append(pt.length).append(" ");
                 
                 boolean stat = java.lang.reflect.Modifier.isStatic(m.getModifiers());
-                if (!mn.contains("encod") && !mn.contains("silk") && !mn.contains("pcm2")
-                    && !mn.contains("tosilk") && !mn.contains("convert")) continue;
+                // Try ALL methods that could produce output - no filter, just try!
                 
                 m.setAccessible(true);
                 try {
