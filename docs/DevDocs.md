@@ -1,11 +1,11 @@
 
-# 墨鸦 Strata v4.3.2 — 开发文档
+# 墨鸦 Strata v4.4.0 — 开发文档
 
 ---
 
 ## 1. 项目简介
 
-墨鸦 Strata 是一个轻量级 Agentic RAG 框架，运行在 QQ 群聊/私聊环境中，为 AI 提供长期记忆、身份隔离、可解释架构和监听唤醒机制。项目全量开源，采用 QFun Plugin (BeanShell) 实现，使用 DeepSeek v4 Flash 模型。
+墨鸦 Strata 是一个轻量级 Agentic RAG 框架，运行在 QQ 群聊/私聊环境中，为 AI 提供长期记忆、身份隔离、可解释架构、监听唤醒机制和 Edge TTS 语音合成。项目全量开源，采用 QFun Plugin (BeanShell) 实现，使用 DeepSeek v4 Flash 模型。
 
 ---
 
@@ -274,6 +274,7 @@ CREATE TABLE memories (
 | `search_api_key` | — | 搜索 API key |
 | `search_rounds` | `3` | 最大搜索轮数 |
 | `temperature` | `0.7` | 生成温度 |
+| `tts_voice` | `zh-CN-XiaoxiaoNeural` | TTS 音色 |
 | `sewarden` | `1` | 标签逃逸防护（推荐开启） |
 | `pat_wake` | `1` | 拍一拍唤醒 |
 | `ai_prefix` | `1` | AI 消息强制 [AI] 前缀 |
@@ -305,6 +306,9 @@ CREATE TABLE memories (
 | `/ai clear` | 清除上下文 |
 | `/ai forget <keyword>` | 按关键词删除记忆 |
 | `/ai status` | 查看 AI 状态 |
+| `/ai tts on/off` | 开启/关闭 TTS 语音合成 |
+| `/ai tts voice <name>` | 切换 TTS 音色 |
+| `/ai tts` | 查看音色列表 |
 | `/setdefaultaccount member/blocked` | 设置默认账户策略 |
 | `/admin`, `/block`, `/member` | 权限管理 |
 | `/whoami` | 查看自己角色 |
@@ -325,6 +329,7 @@ CREATE TABLE memories (
 | v4.0 | 全尖括号标签 + name 纯 UIN + 监听只记录 + 系统概览白盒 |
 | v4.1 | 加入 SEWarden |
 | v4.2 | Tavily 搜索支持 + 可配置搜索轮数 |
+| v4.4.0 | Edge TTS 语音合成 + 7音色 + TTS静默文本 |
 | v4.3.2 | v4.3.0 内容 + search_memory/search_public_memory 工具：AI 可按关键词模糊搜索记忆内容 |
 
 ---

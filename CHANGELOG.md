@@ -1,4 +1,29 @@
 # Changelog
+
+## v4.4.0 (2026-06-21) — Corax-Strata
+### Features
+- 🎙️ **Edge TTS 语音合成**: `/ai tts on/off` 开关，AI 回复可语音播放
+- 🎤 **7 个音色**: 晓晓/晓伊/晓萱（女声），云希/云健/云扬/云夏（男声）
+- `/ai tts voice <name>` 一键切换音色（自动补齐 zh-CN-/Neural）
+- `/ai tts` 显示音色列表帮助
+- TTS 模式下自动静默文本，仅发语音消息
+- `/help` 增加 TTS 命令说明
+
+### Bug Fixes
+- 修复 setAiConfig 函数误删导致音色切换报错
+- 修复 BeanShell 孤儿 catch 块解析错误
+- 移除 #TEST 调试钩子
+
+### Refactor
+- 精简 TTS 链路：Edge TTS → MP3 → sendPtt 直发
+- 移除所有 SILK/AMR 编码尝试代码（~730 行）
+- 移除 kktts 枫林 TTS 支持
+- 移除 plugin/bin/ 二进制文件
+
+### Docs
+- 更新帮助文本、音色列表
+- 更新版本号至 v4.4.0
+
 ## v4.3.2
 ### Features
 - Add set_reminder / cancel_reminder / list_reminders tools: AI can set timed reminders, cancel them, and query pending reminders with remaining time
