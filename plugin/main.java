@@ -3435,7 +3435,7 @@ if (!trimmed.startsWith("/") || trimmed.length() < 2) return;
     if (cmd.equals("/help")) {
         String role = getRole(senderUin);
         StringBuilder h = new StringBuilder();
-        h.append("墨鸦 v4.3.2 Strata\n\n/ai <内容>\n/ai memory / debug / reboot / status\n");
+        h.append("墨鸦 v4.4.0 Strata\n\n/ai <内容>\n/ai memory / debug / reboot / status\n");
         h.append("/ai tts [on/off/voice <name>] — 语音合成\n");
         if (role.equals("ADMIN") || role.equals("OWNER")) h.append("/ai set / config / off / on / clear\n");
         if (role.equals("OWNER")) h.append("/setdefaultaccount\n");
