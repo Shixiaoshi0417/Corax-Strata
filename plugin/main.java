@@ -3105,7 +3105,6 @@ String edgeTTSWithFormat(String text, String voice, String outputPath, String ou
 
             if (opcode == 1) {
                 String txt = new String(payload, "UTF-8");
-                log("error.txt", "TTS frame[" + frameCount + "] op=" + opcode + " len=" + plen + " txt=" + (txt.length() > 300 ? txt.substring(0, 300) : txt));
                 if (txt.contains("Path:turn.end")) break;
             } else if (opcode == 2) {
                 binFrames++;
@@ -3123,7 +3122,6 @@ String edgeTTSWithFormat(String text, String voice, String outputPath, String ou
         }
         fos.flush(); fos.close(); fos = null;
         if (!audioReceived) { new File(outputPath).delete(); return "no audio (frames:" + frameCount + " bin:" + binFrames + ")"; }
-        log("error.txt", "TTS OK: frames=" + frameCount + " bin=" + binFrames + " audioBytes=" + totalAudioBytes);
         return null;
     } catch (Exception e) {
         return e.getClass().getSimpleName() + ": " + e.getMessage();
