@@ -3081,11 +3081,67 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     try { if (trySilkQQ(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S1:").append(e.getMessage()).append("\n"); }
 
-    // Strategy 2: JNI .so via loadJava/loadDex + System.load
-    try { if (trySilkJNI(pcmPath, silkPath, sampleRate, diag)) return null; }
+    // Strategy 2: QQ native SILK library via System.loadLibrary
+    try { if (trySilkNative(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S2:").append(e.getMessage()).append("\n"); }
 
+    // Strategy 3: JNI .so via loadJava + System.load
+    try { if (trySilkJNI(pcmPath, silkPath, sampleRate, diag)) return null; }
+    catch (Exception e) { diag.append("S3:").append(e.getMessage()).append("\n"); }
+
     return diag.toString();
+}
+
+// Try to use QQ's own native SILK library directly
+boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
+    // QQ ships with silk codec libraries - try to find and use them
+    String[] libNames = {
+        "silk_codec", "silk", "SilkCodec", "qqsilk", "tencent_silk",
+        "pnssilk", "silkcommon", "libsilk", "codec_silk", "avsilk",
+        "silk_enc", "qq_silk", "tav_silk"
+    };
+    for (int li = 0; li < libNames.length; li++) {
+        String lib = libNames[li];
+        try {
+            System.loadLibrary(lib);
+            diag.append("[NAT]loaded ").append(lib).append(" ");
+            // Library loaded - now try to find and call encode functions
+            // Common SILK API pattern: int silk_encode(short* pcm, int samples, byte* out)
+            // We can try to use JNI reflection to find native methods
+        } catch (Throwable t) {
+            // Library not found, try next
+        }
+    }
+    
+    // Alternative: scan /proc/self/maps for silk-related .so files
+    try {
+        java.io.BufferedReader br = new java.io.BufferedReader(
+            new java.io.InputStreamReader(
+                new java.io.FileInputStream("/proc/self/maps")));
+        String line;
+        java.util.Set foundLibs = new java.util.LinkedHashSet();
+        while ((line = br.readLine()) != null) {
+            String lower = line.toLowerCase();
+            if (lower.contains("silk") && lower.contains(".so")) {
+                int idx = line.lastIndexOf('/');
+                if (idx > 0) {
+                    String path = line.substring(idx);
+                    if (!foundLibs.contains(path)) {
+                        foundLibs.add(path);
+                        diag.append(path).append(" ");
+                    }
+                }
+            }
+        }
+        br.close();
+        if (foundLibs.size() > 0) {
+            diag.append("found ").append(foundLibs.size()).append(" silk .so ");
+        }
+    } catch (Exception e) {
+        diag.append("maps:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "?").append(" ");
+    }
+    
+    return false;
 }
 
 boolean trySilkQQ(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
