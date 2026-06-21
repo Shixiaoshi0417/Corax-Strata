@@ -3129,6 +3129,9 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
     
     diag.append("[NAT]try ").append(silkClassNames.size()).append(" wrappers ");
     
+    // First try to ensure the native library is loaded
+    try { System.loadLibrary("codecsilk"); diag.append("lib-ok "); } catch (Throwable t) { }
+    
     for (Object cnObj : silkClassNames) {
         String cn = (String) cnObj;
         try {
@@ -3138,12 +3141,20 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
             if (c == null) continue;
             
             String sn = cn.substring(cn.lastIndexOf('.') + 1);
+            diag.append(sn).append(":[");
             java.lang.reflect.Method[] ms = c.getDeclaredMethods();
+            int tried = 0;
             for (java.lang.reflect.Method m : ms) {
                 String mn = m.getName().toLowerCase();
                 Class[] pt = m.getParameterTypes();
-                boolean stat = java.lang.reflect.Modifier.isStatic(m.getModifiers());
                 
+                // Log all method names for debugging
+                if (mn.contains("encod") || mn.contains("silk") || mn.contains("pcm") 
+                    || mn.contains("convert") || mn.contains("trans")) {
+                    diag.append(m.getName()).append("(").append(pt.length).append(") ");
+                }
+                
+                boolean stat = java.lang.reflect.Modifier.isStatic(m.getModifiers());
                 if (!mn.contains("encod") && !mn.contains("silk") && !mn.contains("pcm2")
                     && !mn.contains("tosilk") && !mn.contains("convert")) continue;
                 
@@ -3157,11 +3168,25 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
                         m.invoke(inst, pcmPath, silkPath);
                     } else if (pt.length == 4 && pt[0] == String.class && pt[1] == String.class
                         && pt[2] == int.class) {
-                        // try (String pcm, String silk, int rate, int bitrate)
                         m.invoke(inst, pcmPath, silkPath, sampleRate, 23900);
+                    } else if (pt.length == 2 && pt[0] == byte[].class && pt[1] == int.class) {
+                        // encode(byte[] pcm, int sampleRate) -> returns byte[]
+                        FileInputStream pcmFis = new FileInputStream(pcmPath);
+                        byte[] pcmData = new byte[(int)new File(pcmPath).length()];
+                        pcmFis.read(pcmData); pcmFis.close();
+                        Object result = m.invoke(inst, pcmData, sampleRate);
+                        if (result != null && result instanceof byte[]) {
+                            FileOutputStream silkFos = new FileOutputStream(silkPath);
+                            silkFos.write((byte[])result); silkFos.close();
+                        }
+                    } else if (pt.length == 1 && pt[0] == File.class) {
+                        m.invoke(inst, new File(pcmPath));
+                    } else if (pt.length == 2 && pt[0] == File.class && pt[1] == File.class) {
+                        m.invoke(inst, new File(pcmPath), new File(silkPath));
                     } else {
                         continue;
                     }
+                    tried++;
                     File sf = new File(silkPath);
                     if (sf.exists() && sf.length() > 100) {
                         diag.append(sn).append(".").append(m.getName()).append(" OK! ");
@@ -3171,6 +3196,7 @@ boolean trySilkNative(String pcmPath, String silkPath, int sampleRate, StringBui
                     // Method exists but failed - may need different params
                 }
             }
+            diag.append("]");
         } catch (Exception e) { }
     }
     
