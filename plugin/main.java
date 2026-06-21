@@ -1464,7 +1464,9 @@ void handleAi(Object msg, String prompt) {
         || trimmed.equals("tts voices") || trimmed.equals("tts voice") || trimmed.startsWith("tts voice ")) {
         if (!userRole.equals("ADMIN") && !userRole.equals("OWNER")) { sendPermissionDenied(msg); return; }
         String key = peerUin + "_" + chatType;
-        if (trimmed.equals("tts") || trimmed.equals("tts on")) {
+        if (trimmed.equals("tts") || trimmed.equals("tts voices") || trimmed.equals("tts voice")) {
+            sendStyledHeader(msg, "INFO", getVoiceList()); return;
+        } else if (trimmed.equals("tts on")) {
             addToList(pluginPath + "/config/tts_sessions.txt", key);
             if (ttsSessions != null) ttsSessions.add(key);
             sendStyledHeader(msg, "INFO", "TTS 已开启 (voice:" + getTtsVoice() + ")"); return;
@@ -1472,12 +1474,12 @@ void handleAi(Object msg, String prompt) {
             removeFromList(pluginPath + "/config/tts_sessions.txt", key);
             if (ttsSessions != null) ttsSessions.remove(key);
             sendStyledHeader(msg, "INFO", "TTS 已关闭"); return;
-        } else if (trimmed.equals("tts voices") || trimmed.equals("tts voice")) {
-            sendStyledHeader(msg, "INFO", getVoiceList());
-            return;
         } else if (trimmed.startsWith("tts voice ")) {
             String v = trimmed.substring("tts voice ".length()).trim();
             if (v.isEmpty()) { sendStyledHeader(msg, "INFO", getVoiceList()); return; }
+            // Auto-add zh-CN- prefix and Neural suffix
+            if (!v.startsWith("zh-") && !v.startsWith("en-")) v = "zh-CN-" + v;
+            if (!v.endsWith("Neural") && !v.endsWith("Standard")) v = v + "Neural";
             setAiConfig("tts_voice", v);
             sendStyledHeader(msg, "INFO", "音色已切换: " + v); return;
         } else {
@@ -3177,8 +3179,10 @@ String getVoiceList() {
         + "Yunye     云野 — 自然随性\n"
         + "Yunze     云泽 — 内敛含蓄\n"
         + "━━ 用法 ━━\n"
-        + "/ai tts voice zh-CN-XiaoxiaoNeural # 女声晓晓\n"
-        + "/ai tts voice zh-CN-YunxiNeural   # 男声云希";
+        + "/ai tts voice Xiaoxiao  # 女声晓晓\n"
+        + "/ai tts voice Yunxi    # 男声云希\n"
+        + "/ai tts               # 查看此列表\n"
+        + "/ai tts on / off      # 开关TTS";
 }
 
 String generateSecMsGec() {
