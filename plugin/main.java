@@ -2990,15 +2990,24 @@ String getTtsVoice() {
 String generateSecMsGec() {
     try {
         long unixSec = System.currentTimeMillis() / 1000;
-        long ticks = unixSec * 10000000L + 621355968000000000L;
-        ticks = ticks - (ticks % 3000000000L);
-        String raw = ticks + "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+        long winSec = unixSec + 11644473600L;
+        winSec = winSec - (winSec % 300);
+        long ticks = winSec * 10000000L;
+        String raw = String.valueOf(ticks) + "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
         java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-        byte[] hash = md.digest(raw.getBytes("UTF-8"));
+        byte[] hash = md.digest(raw.getBytes("ASCII"));
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < hash.length; i++) sb.append(String.format("%02X", hash[i] & 0xFF));
         return sb.toString();
     } catch (Exception e) { return ""; }
+}
+
+String generateMuid() {
+    byte[] b = new byte[16];
+    new Random().nextBytes(b);
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < b.length; i++) sb.append(String.format("%02X", b[i] & 0xFF));
+    return sb.toString();
 }
 
 String edgeTTS(String text, String voice, String outputPath) {
@@ -3019,23 +3028,27 @@ String edgeTTS(String text, String voice, String outputPath) {
         String wsKey = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP);
         String connId = UUID.randomUUID().toString().replace("-", "");
         String secGec = generateSecMsGec();
+        String muid = generateMuid();
 
         StringBuilder req = new StringBuilder();
-        req.append("GET /consumer/speech/synthesize/restream/v1/hubs/SpeechHub");
-        req.append("?Sec-MS-GEC=").append(secGec);
-        req.append("&Sec-MS-GEC-Version=1-130.0.2849.68");
+        req.append("GET /consumer/speech/synthesize/readaloud/edge/v1");
+        req.append("?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4");
         req.append("&ConnectionId=").append(connId);
+        req.append("&Sec-MS-GEC=").append(secGec);
+        req.append("&Sec-MS-GEC-Version=1-143.0.3650.75");
         req.append(" HTTP/1.1\r\n");
         req.append("Host: speech.platform.bing.com\r\n");
         req.append("Upgrade: websocket\r\n");
         req.append("Connection: Upgrade\r\n");
         req.append("Sec-WebSocket-Key: ").append(wsKey).append("\r\n");
         req.append("Sec-WebSocket-Version: 13\r\n");
-        req.append("Accept-Encoding: gzip, deflate, br\r\n");
+        req.append("Accept-Encoding: gzip, deflate, br, zstd\r\n");
         req.append("Accept-Language: en-US,en;q=0.9\r\n");
         req.append("Cache-Control: no-cache\r\n");
         req.append("Pragma: no-cache\r\n");
-        req.append("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.2849.68 Safari/537.36 Edg/130.0.2849.68\r\n");
+        req.append("Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold\r\n");
+        req.append("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0\r\n");
+        req.append("Cookie: muid=").append(muid).append(";\r\n");
         req.append("\r\n");
         out.write(req.toString().getBytes("UTF-8"));
         out.flush();
@@ -3056,12 +3069,16 @@ String edgeTTS(String text, String voice, String outputPath) {
         if (!httpResp.toString().contains("101")) return "handshake(GEC=" + secGec.substring(0, Math.min(8, secGec.length())) + "): " + httpResp.toString().split("\r\n")[0];
 
         String reqId = UUID.randomUUID().toString().replace("-", "");
-        String config = "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
-            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}";
+        SimpleDateFormat isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+        isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
+        String ts = isoFmt.format(new Date());
+
+        String config = "X-Timestamp:" + ts + "\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
+            + "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n";
         wsSendText(out, config);
 
         String escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
-        String ssml = "X-RequestId:" + reqId + "\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n"
+        String ssml = "X-RequestId:" + reqId + "\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:" + ts + "\r\nPath:ssml\r\n\r\n"
             + "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>"
             + "<voice name='" + voice + "'>"
             + "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>" + escaped + "</prosody>"
