@@ -1466,14 +1466,16 @@ void handleAi(Object msg, String prompt) {
         if (trimmed.equals("tts") || trimmed.equals("tts on")) {
             addToList(pluginPath + "/config/tts_sessions.txt", key);
             if (ttsSessions != null) ttsSessions.add(key);
-            sendStyledHeader(msg, "INFO", "TTS 已开启 (voice: " + getTtsVoice() + ")"); return;
+            String eng = getAiConfig("tts_engine");
+            if (eng == null || eng.isEmpty()) eng = "kktts";
+            sendStyledHeader(msg, "INFO", "TTS 已开启 (engine:" + eng + " voice:" + getTtsVoice() + ")"); return;
         } else if (trimmed.equals("tts off")) {
             removeFromList(pluginPath + "/config/tts_sessions.txt", key);
             if (ttsSessions != null) ttsSessions.remove(key);
             sendStyledHeader(msg, "INFO", "TTS 已关闭"); return;
         } else {
             Set ts = readStringSet(pluginPath + "/config/tts_sessions.txt");
-            sendStyledHeader(msg, "INFO", "TTS: " + (ts.contains(key) ? "已开启" : "已关闭") + " (voice: " + getTtsVoice() + ")"); return;
+            sendStyledHeader(msg, "INFO", "TTS: " + (ts.contains(key) ? "已开启" : "已关闭") + " (engine:" + eng + " voice:" + getTtsVoice() + ")"); return;
         }
     }
 
@@ -2038,7 +2040,14 @@ dumpMsgs.put(dj);
             String pcmPath = pluginPath + "/config/tts_" + tsNow + ".pcm";
             String silkPath = pluginPath + "/config/tts_" + tsNow + ".silk";
             try {
-                String err = edgeTTS(ttsText, getTtsVoice(), mp3Path);
+                String ttsEngine = getAiConfig("tts_engine");
+                if (ttsEngine == null || ttsEngine.isEmpty()) ttsEngine = "kktts";
+                String err = null;
+                if ("edge".equals(ttsEngine)) {
+                    err = edgeTTS(ttsText, getTtsVoice(), mp3Path);
+                } else {
+                    err = kkttsTTS(ttsText, null, mp3Path);
+                }
                 if (err != null) {
                     log("error.txt", "TTS(mp3): " + err);
                     if (debug) sendDebug(peerUin, chatType, "TTS 失败: " + err);
@@ -2981,7 +2990,7 @@ void handleAiSet(Object msg, String args) {
         return; 
     }
     String key = parts[0].trim(); String value = parts[1].trim();
-    String[] vk = { "api_key","model","ai_url","context_ttl","max_turns","search_provider","search_api_key","show_stats","debug","ai_prefix","search_rounds","temperature","pat_wake","sewarden","tts_voice" };
+    String[] vk = { "api_key","model","ai_url","context_ttl","max_turns","search_provider","search_api_key","show_stats","debug","ai_prefix","search_rounds","temperature","pat_wake","sewarden","tts_voice","tts_engine" };
     boolean valid = false; for (int i = 0; i < vk.length; i++) if (vk[i].equals(key)) { valid = true; break; }
     if (!valid) { sendStyledHeader(msg, "ERROR", "无效: " + key); return; }
     if (key.equals("context_ttl") || key.equals("max_turns") || key.equals("show_stats") || key.equals("debug") || key.equals("pat_wake")) { try { Integer.parseInt(value); } catch (Exception e) { sendStyledHeader(msg, "ERROR", "必须是整数"); return; } }
@@ -2994,7 +3003,7 @@ void handleAiConfig(Object msg) {
     if (!requireAdminOrOwner(msg)) return;
     Map cfg = loadAiConfig();
     StringBuilder sb = new StringBuilder("[AI 配置]\n");
-    String[] keys = { "model","api_key","ai_url","context_ttl","max_turns","search_provider","search_api_key","search_rounds","show_stats","debug","ai_prefix","temperature","pat_wake","sewarden","tts_voice" };
+    String[] keys = { "model","api_key","ai_url","context_ttl","max_turns","search_provider","search_api_key","search_rounds","show_stats","debug","ai_prefix","temperature","pat_wake","sewarden","tts_voice","tts_engine" };
     for (int i = 0; i < keys.length; i++) { String k = keys[i]; String v = (String) cfg.get(k); if (v == null) v = ""; if (k.contains("api_key") && v.length() >= 8) v = maskApiKey(v); sb.append(k).append(" = ").append(v).append("\n"); }
     sb.append("default_account = ").append(getDefaultAccount()).append("\n");
     String persona = loadPersona(); sb.append("人设 = ").append(getActivePersona()).append(persona.isEmpty() ? " (未)" : " (" + persona.length() + "字符)").append("\n");
@@ -3010,7 +3019,106 @@ void handleAiForget(Object msg, String keyword) {
     sendStyledHeader(msg, "INFO", d > 0 ? "已删除 " + d + " 条" : "没有匹配的记忆");
 }
 
-// ==================== Edge TTS ====================
+// ==================== 枫林免费 TTS ====================
+String kkttsTTS(String text, String voiceId, String outputPath) {
+    if (text == null || text.trim().isEmpty()) return "empty text";
+    text = text.trim();
+    if (text.length() > 1000) text = text.substring(0, 1000);
+    HttpURLConnection conn = null;
+    FileOutputStream fos = null;
+    InputStream in = null;
+    try {
+        String urlStr = "https://api-v2.yuafeng.cn/API/kktts.php?content="
+            + java.net.URLEncoder.encode(text, "UTF-8")
+            + "&action=voice";
+        if (voiceId != null && !voiceId.isEmpty()) {
+            urlStr += "&voice_id=" + java.net.URLEncoder.encode(voiceId, "UTF-8");
+        }
+        java.net.URL url = new java.net.URL(urlStr);
+        conn = (HttpURLConnection) url.openConnection();
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setInstanceFollowRedirects(true);
+        int code = conn.getResponseCode();
+        String ctype = conn.getContentType();
+        
+        if (code == 200 && ctype != null && ctype.startsWith("audio/")) {
+            // Direct binary audio response
+            in = conn.getInputStream();
+            fos = new FileOutputStream(outputPath);
+            byte[] buf = new byte[8192]; int n;
+            while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
+            fos.close(); fos = null;
+            return null; // success
+        } else if (code == 200) {
+            // Might be JSON with URL
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder(); String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            br.close();
+            String resp = sb.toString().trim();
+            // Try parse as JSON
+            try {
+                JSONObject json = new JSONObject(resp);
+                if (json.has("url")) {
+                    String mp3Url = json.getString("url");
+                    return downloadFile(mp3Url, outputPath);
+                }
+                if (json.has("data")) {
+                    JSONObject data = json.getJSONObject("data");
+                    if (data.has("url")) {
+                        return downloadFile(data.getString("url"), outputPath);
+                    }
+                }
+                // Maybe it's a URL string directly
+                if (resp.startsWith("http")) {
+                    return downloadFile(resp, outputPath);
+                }
+            } catch (Exception je) {
+                if (resp.startsWith("http")) {
+                    return downloadFile(resp, outputPath);
+                }
+            }
+            return "unexpected response: " + resp.substring(0, Math.min(100, resp.length()));
+        } else {
+            return "HTTP " + code;
+        }
+    } catch (Exception e) {
+        return "kktts: " + e.getMessage();
+    } finally {
+        if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+        if (in != null) try { in.close(); } catch (Exception ignored) {}
+        if (conn != null) conn.disconnect();
+    }
+}
+
+String downloadFile(String urlStr, String outputPath) {
+    HttpURLConnection conn = null;
+    FileOutputStream fos = null;
+    InputStream in = null;
+    try {
+        java.net.URL url = new java.net.URL(urlStr);
+        conn = (HttpURLConnection) url.openConnection();
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setInstanceFollowRedirects(true);
+        int code = conn.getResponseCode();
+        if (code != 200) return "download HTTP " + code;
+        in = conn.getInputStream();
+        fos = new FileOutputStream(outputPath);
+        byte[] buf = new byte[8192]; int n;
+        while ((n = in.read(buf)) > 0) fos.write(buf, 0, n);
+        fos.close();
+        return null;
+    } catch (Exception e) {
+        return "download: " + e.getMessage();
+    } finally {
+        if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+        if (in != null) try { in.close(); } catch (Exception ignored) {}
+        if (conn != null) conn.disconnect();
+    }
+}
 
 String decodeMp3ToPcm(String mp3Path, String pcmPath) {
     android.media.MediaExtractor extractor = null;
