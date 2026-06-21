@@ -3076,16 +3076,16 @@ String decodeMp3ToPcm(String mp3Path, String pcmPath) {
 String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
     StringBuilder diag = new StringBuilder();
 
-    // Strategy 1: QQ internal SILK encoder via classLoader
+    // Strategy 1: QQ internal SILK encoder via classLoader (no root)
     try { if (trySilkQQ(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S1:").append(e.getMessage()).append("\n"); }
 
-    // Strategy 2: JNI .so via loadJava + System.load (dlopen has different SELinux rules than exec)
+    // Strategy 2: JNI .so via DexClassLoader + System.load (dlopen works without root)
     try { if (trySilkJNI(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S2:").append(e.getMessage()).append("\n"); }
 
-    // Strategy 3: exec binary from code_cache / app dirs
-    try { if (trySilkExec(pcmPath, silkPath, sampleRate, diag)) return null; }
+    // Strategy 3: MediaCodec AMR-WB (pure Java, no root, no native binaries)
+    try { if (tryAmrMediaCodec(pcmPath, silkPath, sampleRate, diag)) return null; }
     catch (Exception e) { diag.append("S3:").append(e.getMessage()).append("\n"); }
 
     return diag.toString();
@@ -3171,7 +3171,7 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
         dexLoaded = true;
     } catch (Exception e) { diag.append("[JNI]loadDex:").append(e.getMessage()).append("\n"); }
 
-    // Try DexClassLoader as fallback
+    // Try to find SilkJNI class
     Class silkClass = null;
     if (dexLoaded) {
         try { silkClass = Class.forName("SilkJNI"); } catch (Exception e) { }
@@ -3179,15 +3179,25 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
         if (silkClass == null) try { silkClass = Thread.currentThread().getContextClassLoader().loadClass("SilkJNI"); } catch (Exception e) { }
     }
     if (silkClass == null) {
-        // Fallback: use DexClassLoader directly
+        // Fallback: DexClassLoader with system ClassLoader as parent (works without root)
         try {
+            ClassLoader sysCl = Class.forName("java.lang.Object").getClassLoader();
+            if (sysCl == null) sysCl = ClassLoader.getSystemClassLoader();
             dalvik.system.DexClassLoader dcl = new dalvik.system.DexClassLoader(
-                dexSrc, soDir, null, classLoader);
+                dexSrc, soDir, null, sysCl != null ? sysCl : classLoader);
             silkClass = dcl.loadClass("SilkJNI");
             diag.append("[JNI]DexClassLoader ");
         } catch (Exception e) {
-            diag.append("[JNI]DexCL:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "err").append("\n");
+            diag.append("[JNI]DexCL:").append(e.getMessage() != null ? e.getMessage().substring(0, Math.min(30, e.getMessage().length())) : "err").append(" ");
         }
+    }
+    if (silkClass == null) {
+        // Last resort: try PathClassLoader
+        try {
+            dalvik.system.PathClassLoader pcl = new dalvik.system.PathClassLoader(dexSrc, classLoader);
+            silkClass = pcl.loadClass("SilkJNI");
+            diag.append("[JNI]PathCL ");
+        } catch (Exception e) { }
     }
     if (silkClass == null) {
         diag.append("[JNI]class not found\n");
@@ -3222,90 +3232,114 @@ boolean trySilkJNI(String pcmPath, String silkPath, int sampleRate, StringBuilde
     return false;
 }
 
-boolean trySilkExec(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
-    String srcBin = pluginPath + "/bin/silk_encoder";
-    if (!new File(srcBin).exists()) {
-        try {
-            String url = "https://github.com/shixiaoshi0417/Corax-Strata/raw/main/plugin/bin/silk_encoder";
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            conn.setInstanceFollowRedirects(true); conn.setConnectTimeout(15000); conn.setReadTimeout(30000);
-            int code = conn.getResponseCode();
-            if (code == 302 || code == 301) {
-                conn = (java.net.HttpURLConnection) new java.net.URL(conn.getHeaderField("Location")).openConnection();
-                conn.setConnectTimeout(15000); conn.setReadTimeout(30000); code = conn.getResponseCode();
-            }
-            if (code != 200) { conn.disconnect(); diag.append("download:HTTP").append(code).append("\n"); return false; }
-            new File(pluginPath + "/bin").mkdirs();
-            InputStream dis = conn.getInputStream(); FileOutputStream dout = new FileOutputStream(srcBin);
-            byte[] buf = new byte[8192]; int n; while ((n = dis.read(buf)) > 0) dout.write(buf, 0, n);
-            dout.close(); dis.close(); conn.disconnect();
-        } catch (Exception e) { diag.append("download:").append(e.getMessage()).append("\n"); return false; }
-    }
+// Pure Java AMR-WB encoder via Android MediaCodec — no root, no native binaries
+boolean tryAmrMediaCodec(String pcmPath, String silkPath, int sampleRate, StringBuilder diag) {
+    android.media.MediaCodec encoder = null;
+    FileInputStream fis = null;
+    FileOutputStream fos = null;
+    try {
+        // AMR-WB: 16000 Hz, mono, 16-bit
+        int amrSampleRate = 16000;
+        int amrBitRate = 23850; // AMR-WB 23.85 kbps mode 8
 
-    java.util.List dirs = new java.util.ArrayList();
-    try { dirs.add(((File) context.getClass().getMethod("getCodeCacheDir").invoke(context)).getAbsolutePath()); }
-    catch (Exception e) { diag.append("cc:").append(e.getMessage()).append(" "); }
-    try { dirs.add(((File) context.getClass().getMethod("getDir", String.class, int.class).invoke(context, "silk", 0)).getAbsolutePath()); }
-    catch (Exception e) { }
-    try { dirs.add(((File) context.getClass().getMethod("getFilesDir").invoke(context)).getAbsolutePath()); }
-    catch (Exception e) { }
-    // Additional writable+executable dirs for Android
-    dirs.add("/data/local/tmp");
-    try { dirs.add(pluginPath + "/bin"); } catch (Exception e) { }
-    if (dirs.isEmpty()) {
-        try {
-            Object at = Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null);
-            Object app = at.getClass().getMethod("getApplication").invoke(at);
-            dirs.add(((File) app.getClass().getMethod("getFilesDir").invoke(app)).getAbsolutePath());
-        } catch (Exception e) { dirs.add("/data/data/com.tencent.mobileqq/code_cache"); }
-    }
+        android.media.MediaFormat fmt = android.media.MediaFormat.createAudioFormat(
+            "audio/3gpp", amrSampleRate, 1);
+        fmt.setInteger("bitrate", amrBitRate);
 
-    for (Object dirObj : dirs) {
-        String dir = (String) dirObj;
-        String ep = dir + "/silk_encoder";
-        String dn = dir.substring(dir.lastIndexOf('/') + 1);
-        diag.append("[exec]").append(dn).append(": ");
-        try {
-            File ef = new File(ep);
-            if (!ef.exists()) {
-                new File(dir).mkdirs();
-                FileInputStream fis = new FileInputStream(srcBin); FileOutputStream fos = new FileOutputStream(ep);
-                byte[] buf = new byte[8192]; int n; while ((n = fis.read(buf)) > 0) fos.write(buf, 0, n);
-                fos.close(); fis.close();
-            }
-            ef.setExecutable(true, false);
-            ef.setReadable(true, false);
-            Runtime.getRuntime().exec(new String[]{"chmod", "755", ep}).waitFor();
-            // Try direct exec first
-            Process proc = null;
-            int exit = -1;
-            try {
-                proc = Runtime.getRuntime().exec(new String[]{ep, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"});
-                exit = proc.waitFor();
-            } catch (Exception ex1) {
-                // Fallback: use sh -c wrapper
-                try {
-                    diag.append("sh:");
-                    proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", "\"" + ep + "\" \"" + pcmPath + "\" \"" + silkPath + "\" -Fs_API " + sampleRate + " -tencent -quiet"});
-                    exit = proc.waitFor();
-                } catch (Exception ex2) {
-                    diag.append(ex2.getMessage() != null ? ex2.getMessage().substring(0, Math.min(40, ex2.getMessage().length())) : "sh-err");
+        encoder = android.media.MediaCodec.createEncoderByType("audio/3gpp");
+        encoder.configure(fmt, null, null, 1); // CONFIGURE_FLAG_ENCODE = 1
+        encoder.start();
+
+        // Read PCM data
+        File pcmFile = new File(pcmPath);
+        int pcmSize = (int) pcmFile.length();
+        fis = new FileInputStream(pcmFile);
+
+        // Write AMR to output path (use .amr extension internally, but output to silkPath for compatibility)
+        fos = new FileOutputStream(silkPath);
+
+        android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+        boolean inputDone = false;
+        boolean outputDone = false;
+        byte[] pcmBuf = new byte[4096];
+        long totalUs = (long) (pcmSize / 2.0 / amrSampleRate * 1000000.0);
+
+        while (!outputDone) {
+            if (!inputDone) {
+                int inIdx = encoder.dequeueInputBuffer(10000);
+                if (inIdx >= 0) {
+                    java.nio.ByteBuffer inBuf = encoder.getInputBuffer(inIdx);
+                    int read = fis.read(pcmBuf);
+                    if (read <= 0) {
+                        encoder.queueInputBuffer(inIdx, 0, 0, totalUs,
+                            android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        inputDone = true;
+                    } else {
+                        // Resample from input rate to 16000 if needed
+                        inBuf.clear();
+                        if (sampleRate != amrSampleRate) {
+                            // Simple linear resampling
+                            inBuf.put(resamplePcm(pcmBuf, read, sampleRate, amrSampleRate));
+                        } else {
+                            inBuf.put(pcmBuf, 0, read);
+                        }
+                        inBuf.flip();
+                        encoder.queueInputBuffer(inIdx, 0, inBuf.limit(),
+                            (long)((double)read / 2 / sampleRate * 1000000), 0);
+                    }
                 }
             }
-            if (exit == 0 && new File(silkPath).exists() && new File(silkPath).length() > 100) return true;
-            if (proc != null) {
-                InputStream es = proc.getErrorStream(); byte[] eb = new byte[256]; int el = es.read(eb);
-                diag.append(el > 0 ? new String(eb, 0, el).trim() : "exit=" + exit);
-            } else {
-                diag.append("no-proc");
+            int outIdx = encoder.dequeueOutputBuffer(info, 10000);
+            if (outIdx >= 0) {
+                if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0)
+                    outputDone = true;
+                if (info.size > 0) {
+                    java.nio.ByteBuffer outBuf = encoder.getOutputBuffer(outIdx);
+                    byte[] chunk = new byte[info.size];
+                    outBuf.get(chunk);
+                    fos.write(chunk);
+                }
+                encoder.releaseOutputBuffer(outIdx, false);
             }
-        } catch (Exception e) {
-            String em = e.getMessage();
-            diag.append(em != null ? em.substring(0, Math.min(60, em.length())) : "error");
         }
-        diag.append("\n");
+        fos.close(); fos = null;
+        fis.close(); fis = null;
+
+        long outSize = new File(silkPath).length();
+        if (outSize > 100) {
+            diag.append("[AMR]OK size=").append(outSize);
+            return true;
+        }
+        diag.append("[AMR]too small:").append(outSize);
+        return false;
+    } catch (Exception e) {
+        diag.append("[AMR]").append(e.getClass().getSimpleName()).append(":").append(
+            e.getMessage() != null ? e.getMessage().substring(0, Math.min(50, e.getMessage().length())) : "err");
+        return false;
+    } finally {
+        if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+        if (fis != null) try { fis.close(); } catch (Exception ignored) {}
+        if (encoder != null) try { encoder.stop(); encoder.release(); } catch (Exception ignored) {}
     }
-    return false;
+}
+
+// Simple linear PCM resampling
+byte[] resamplePcm(byte[] input, int inputLen, int srcRate, int dstRate) {
+    int srcSamples = inputLen / 2; // 16-bit mono
+    int dstSamples = (int)((long)srcSamples * dstRate / srcRate);
+    byte[] output = new byte[dstSamples * 2];
+    for (int i = 0; i < dstSamples; i++) {
+        double srcIdx = (double)i * srcSamples / dstSamples;
+        int idx0 = (int)srcIdx;
+        int idx1 = Math.min(idx0 + 1, srcSamples - 1);
+        double frac = srcIdx - idx0;
+        short s0 = (short)((input[idx0*2] & 0xFF) | ((input[idx0*2+1] & 0xFF) << 8));
+        short s1 = (short)((input[idx1*2] & 0xFF) | ((input[idx1*2+1] & 0xFF) << 8));
+        short val = (short)(s0 + (s1 - s0) * frac);
+        output[i*2] = (byte)(val & 0xFF);
+        output[i*2+1] = (byte)((val >> 8) & 0xFF);
+    }
+    return output;
 }
 
 String getTtsVoice() {
