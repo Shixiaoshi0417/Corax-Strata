@@ -2133,6 +2133,12 @@ void saveAiConfig(Map cfg) {
 
 String getAiConfig(String key) { Map cfg = loadAiConfig(); Object v = cfg.get(key); return v != null ? v.toString() : ""; }
 
+void setAiConfig(String key, String value) {
+    Map cfg = loadAiConfig();
+    cfg.put(key, value);
+    saveAiConfig(cfg);
+}
+
 String resolveAiCfg(Map cfg, String prefixedKey, String fallbackKey) {
     String v = (String) cfg.get(prefixedKey);
     if (v != null && !v.isEmpty()) return v;
