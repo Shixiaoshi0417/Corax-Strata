@@ -2037,7 +2037,15 @@ dumpMsgs.put(dj);
             try {
                 String err = edgeTTS(ttsText, getTtsVoice(), audioPath);
                 if (err == null) {
-                    sendPtt(peerUin, audioPath, chatType);
+                    File af = new File(audioPath);
+                    long sz = af.length();
+                    if (debug) sendDebug(peerUin, chatType, "TTS audio: " + sz + " bytes");
+                    if (sz > 100) {
+                        sendPtt(peerUin, audioPath, chatType);
+                    } else {
+                        log("error.txt", "TTS: audio too small (" + sz + " bytes)");
+                        if (debug) sendDebug(peerUin, chatType, "TTS 音频太小: " + sz + " bytes");
+                    }
                 } else {
                     log("error.txt", "TTS: " + err);
                     if (debug) sendDebug(peerUin, chatType, "TTS 失败: " + err);
@@ -3087,10 +3095,14 @@ String edgeTTS(String text, String voice, String outputPath) {
 
         fos = new FileOutputStream(outputPath);
         boolean audioReceived = false;
+        int totalAudioBytes = 0;
+        int frameCount = 0;
+        int binFrames = 0;
         while (true) {
             int b0 = in.read(); if (b0 == -1) break;
             int b1 = in.read(); if (b1 == -1) break;
             int opcode = b0 & 0x0F;
+            boolean fin = (b0 & 0x80) != 0;
             boolean masked = (b1 & 0x80) != 0;
             long plen = b1 & 0x7F;
             if (plen == 126) {
@@ -3106,23 +3118,28 @@ String edgeTTS(String text, String voice, String outputPath) {
             int rd = 0;
             while (rd < plen) { int r = in.read(payload, rd, (int)(plen - rd)); if (r == -1) break; rd += r; }
             if (masked) for (int i = 0; i < payload.length; i++) payload[i] ^= maskKey[i % 4];
+            frameCount++;
 
             if (opcode == 1) {
                 String txt = new String(payload, "UTF-8");
                 if (txt.contains("Path:turn.end")) break;
             } else if (opcode == 2) {
+                binFrames++;
                 if (payload.length > 2) {
                     int hdrLen = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
                     int audioStart = 2 + hdrLen;
                     if (audioStart < payload.length) {
-                        fos.write(payload, audioStart, payload.length - audioStart);
+                        int audioLen = payload.length - audioStart;
+                        fos.write(payload, audioStart, audioLen);
+                        totalAudioBytes += audioLen;
                         audioReceived = true;
                     }
                 }
             } else if (opcode == 8) { break; }
         }
         fos.flush(); fos.close(); fos = null;
-        if (!audioReceived) { new File(outputPath).delete(); return "no audio data received"; }
+        if (!audioReceived) { new File(outputPath).delete(); return "no audio (frames:" + frameCount + " bin:" + binFrames + ")"; }
+        log("error.txt", "TTS OK: frames=" + frameCount + " bin=" + binFrames + " audioBytes=" + totalAudioBytes);
         return null;
     } catch (Exception e) {
         return e.getClass().getSimpleName() + ": " + e.getMessage();
