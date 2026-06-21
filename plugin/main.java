@@ -3153,10 +3153,32 @@ String getTtsVoice() {
 }
 
 String getVoiceList() {
-    return "可用音色:\n"
-        + "女: Xiaoxiao(默认) Xiaoyi Xiaochen Xiaohan Xiaomeng Xiaomo Xiaoqiu Xiaorui Xiaoshuang Xiaoxuan Xiaoyan Xiaozhen\n"
-        + "男: Yunxi Yunjian Yunyang Yunfeng Yunhao Yunxia Yunye Yunze\n"
-        + "用法: /ai tts voice zh-CN-YunxiNeural";
+    return "[Edge TTS 音色列表]\n"
+        + "━━ 女声 ━━\n"
+        + "Xiaoxiao  晓晓 — 活泼甜美(默认)\n"
+        + "Xiaoyi    晓伊 — 温柔知性\n"
+        + "Xiaochen  晓辰 — 清澈少女\n"
+        + "Xiaohan   晓涵 — 温婉成熟\n"
+        + "Xiaomeng  晓梦 — 软萌可爱\n"
+        + "Xiaomo    晓墨 — 冷静知性\n"
+        + "Xiaoqiu   晓秋 — 成熟稳重\n"
+        + "Xiaorui   晓睿 — 干练爽朗\n"
+        + "Xiaoshuang 晓双 — 甜美活泼\n"
+        + "Xiaoxuan  晓萱 — 温柔亲切\n"
+        + "Xiaoyan   晓颜 — 优雅知性\n"
+        + "Xiaozhen  晓甄 — 沉稳大气\n"
+        + "━━ 男声 ━━\n"
+        + "Yunxi     云希 — 阳光开朗\n"
+        + "Yunjian   云健 — 成熟稳重\n"
+        + "Yunyang   云扬 — 温暖磁性\n"
+        + "Yunfeng   云枫 — 深沉醇厚\n"
+        + "Yunhao    云皓 — 清澈少年\n"
+        + "Yunxia    云夏 — 沉稳有力\n"
+        + "Yunye     云野 — 自然随性\n"
+        + "Yunze     云泽 — 内敛含蓄\n"
+        + "━━ 用法 ━━\n"
+        + "/ai tts voice zh-CN-XiaoxiaoNeural # 女声晓晓\n"
+        + "/ai tts voice zh-CN-YunxiNeural   # 男声云希";
 }
 
 String generateSecMsGec() {
@@ -3423,7 +3445,7 @@ if (!trimmed.startsWith("/") || trimmed.length() < 2) return;
         String role = getRole(senderUin);
         StringBuilder h = new StringBuilder();
         h.append("墨鸦 v4.3.2 Strata\n\n/ai <内容>\n/ai memory / debug / reboot / status\n");
-        if (role.equals("ADMIN") || role.equals("OWNER")) h.append("/ai set / config / off / on / clear\n/ai tts on/off/status\n");
+        if (role.equals("ADMIN") || role.equals("OWNER")) h.append("/ai set / config / off / on / clear\n/ai tts on/off/status/voices/voice <name>\n");
         if (role.equals("OWNER")) h.append("/setdefaultaccount\n");
         h.append("\n墨鸦-Strata | 轻量级 Agentic RAG");
         sendStyledHeader(msg, "INFO", h.toString()); return;
