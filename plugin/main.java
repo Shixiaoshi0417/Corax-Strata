@@ -3113,9 +3113,16 @@ String convertPcmToSilk(String pcmPath, String silkPath, int sampleRate) {
                 dout.close(); dis.close(); conn.disconnect();
             }
         }
-        encoderFile.setExecutable(true);
+        encoderFile.setExecutable(true, false);
+        Runtime.getRuntime().exec(new String[]{"chmod", "755", encoderPath}).waitFor();
+        String args = encoderPath + " " + pcmPath + " " + silkPath + " -Fs_API " + sampleRate + " -tencent -quiet";
         String[] cmd = new String[]{encoderPath, pcmPath, silkPath, "-Fs_API", String.valueOf(sampleRate), "-tencent", "-quiet"};
-        Process proc = Runtime.getRuntime().exec(cmd);
+        Process proc = null;
+        try { proc = Runtime.getRuntime().exec(cmd); }
+        catch (Exception e1) {
+            try { proc = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", args}); }
+            catch (Exception e2) { return "exec failed: " + e1.getMessage() + " / sh: " + e2.getMessage(); }
+        }
         int exitCode = proc.waitFor();
         if (exitCode != 0) {
             InputStream es = proc.getErrorStream();
