@@ -3292,9 +3292,6 @@ public void onPaiYiPai(String peerUin, int chatType, String operatorUin) {
 public void onMsg(Object msg) {
     if (msg == null) return;
     
-    // 备用测试，用"#TEST"触发
-    if ("#TEST".equals(msg.msg)) { sendMsg(msg.type == 2 ? msg.peerUin : msg.userUin, "onMsg works", msg.type); return; }
-    
     // v3.0: 冷启动预热，静默初始化内部状态
     if (!aiReady) {
         getDb();
