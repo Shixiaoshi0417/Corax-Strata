@@ -12,7 +12,7 @@
 近期更新（v4.4.0）：
 - 🎙️ Edge TTS 语音合成：/ai tts on/off 开关，/ai tts voice <name> 切换音色
 - 🔊 7 个验证可用音色：晓晓/晓伊/晓萱（女）云希/云健/云扬/云夏（男）
-- 🤫 TTS 模式下自动静默文本，仅发语音
+- 💬 TTS 模式下文本与语音同时输出（文字 + 语音）
 - 🧹 精简代码，移除未使用的 SILK/AMR 编码逻辑
 - 🐛 修复 setAiConfig 误删、BeanShell 解析错误等多个 Bug
 
